@@ -250,10 +250,11 @@ export default function App() {
   }, []);
 
   // The local C backend (simulator.exe) only listens on plain HTTP at
-  // localhost:8080. When this page is served over HTTPS, browsers block those
-  // requests as mixed content — they fail with a console error and can never
-  // succeed, so don't attempt them at all. Run the page over http://localhost
-  // to talk to the backend.
+  // localhost:8080. Polling it every second from an HTTPS page would spam the
+  // console (Private Network Access preflights), so polling stays off there —
+  // but a user-initiated Launch still tries once, and it can succeed because
+  // server.c answers preflights with Access-Control-Allow-Private-Network.
+  // Easiest reliable setup is still running this page over http://localhost.
   const canReachLocalBackend = useMemo(() => {
     if (typeof window === 'undefined') return false;
     return window.location.protocol !== 'https:';
@@ -509,37 +510,26 @@ export default function App() {
       notepad: 'Notepad',
       calculator: 'Calculator',
     };
-    const exeNames: Record<string, string> = {
-      chrome: 'chrome.exe',
-      vscode: 'Code.exe',
-      notepad: 'notepad.exe',
-      calculator: 'CalculatorApp.exe',
-    };
-    if (backendConnected && canReachLocalBackend) {
-      try {
-        const res = await fetch('http://localhost:8080/api/launch', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ app, core: pinCore }),
-        });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.message || 'Launch failed');
-        pushToast(data.message, '#30D158');
-        return;
-      } catch (err) {
-        pushToast((err as Error).message, '#FF453A');
-        return;
-      }
+    // Always try the real backend when the user clicks Launch: it may have
+    // started after this page loaded, and on an HTTPS page the attempt can
+    // succeed once simulator.exe answers Private Network Access preflights
+    // (see server.c send_response). Never fake a launch — if the backend is
+    // not reachable, say so and stop.
+    try {
+      const res = await fetch('http://localhost:8080/api/launch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ app, core: pinCore }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.message || 'Launch failed');
+      pushToast(data.message, '#30D158');
+    } catch {
+      pushToast(
+        `${names[app]} not launched — backend not reachable. Run build.bat, then simulator.exe on this Windows PC, and try again.`,
+        '#FF453A'
+      );
     }
-    const simPid = 8000 + Math.floor(Math.random() * 1900);
-    setOsProcs((prev) => [
-      { pid: simPid, name: exeNames[app], memoryMB: Number((28 + Math.random() * 180).toFixed(1)), isNew: true },
-      ...prev.map((p) => ({ ...p, isNew: false })),
-    ]);
-    pushToast(
-      `${names[app]} launch preview (PID ${simPid}${pinCore >= 0 ? `, pinned Core ${pinCore}` : ''}) — run simulator.exe on Windows to spawn real Win32 process`,
-      '#30D158'
-    );
   };
 
   const filteredOsProcs = useMemo(() => {
@@ -1316,6 +1306,13 @@ export default function App() {
                     <p className="text-xs text-white/60 mt-0.5">
                       Spawns only verified executables via <code className="text-[#64D2FF]">CreateProcessA</code> + optional{' '}
                       <code className="text-[#BF5AF2]">SetProcessAffinityMask</code>
+                    </p>
+                    <p className="text-xs mt-1.5 font-semibold">
+                      {backendConnected ? (
+                        <span className="text-[#30D158]">Backend connected (localhost:8080) — launches are real.</span>
+                      ) : (
+                        <span className="text-[#FF9F0A]">Backend not connected — nothing will launch until simulator.exe is running on this PC.</span>
+                      )}
                     </p>
                   </div>
                   <div className="flex items-center gap-2.5">
