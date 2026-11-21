@@ -227,9 +227,40 @@ export default function App() {
     return () => window.removeEventListener('mousemove', onMove);
   }, []);
 
+  // The local C backend (simulator.exe) only listens on plain HTTP at
+  // localhost:8080. When this page is served over HTTPS, browsers block those
+  // requests as mixed content — they fail with a console error and can never
+  // succeed, so don't attempt them at all. Run the page over http://localhost
+  // to talk to the backend.
+  const canReachLocalBackend = useMemo(() => {
+    if (typeof window === 'undefined') return false;
+    return window.location.protocol !== 'https:';
+  }, []);
+
   // Poll 1s live metrics (tries localhost:8080 C backend first; cleanly falls back to smooth browser preview telemetry)
   useEffect(() => {
     let active = true;
+    if (!canReachLocalBackend) {
+      // HTTPS page: the local HTTP backend is unreachable, stay on preview telemetry.
+      setBackendConnected(false);
+      const previewTimer = setInterval(() => {
+        setLiveCpu((prev) => {
+          const next = Math.min(92, Math.max(8, prev + (Math.random() - 0.48) * 9));
+          setCpuSeries((s) => [...s.slice(1), Number(next.toFixed(1))]);
+          return Number(next.toFixed(1));
+        });
+        setLiveRamPct((prev) => {
+          const next = Math.min(84, Math.max(38, prev + (Math.random() - 0.5) * 1.4));
+          setRamSeries((s) => [...s.slice(1), Number(next.toFixed(1))]);
+          setLiveRamUsedGB(Number(((next / 100) * 16.0).toFixed(2)));
+          return Number(next.toFixed(1));
+        });
+      }, 1000);
+      return () => {
+        active = false;
+        clearInterval(previewTimer);
+      };
+    }
     const checkHw = async () => {
       try {
         const res = await fetch('http://localhost:8080/api/hardware', { signal: AbortSignal.timeout(800) });
@@ -280,7 +311,7 @@ export default function App() {
       active = false;
       clearInterval(timer);
     };
-  }, []);
+  }, [canReachLocalBackend]);
 
   // Load C source files on demand when drawer opens
   useEffect(() => {
@@ -429,7 +460,7 @@ export default function App() {
       notepad: 'notepad.exe',
       calculator: 'CalculatorApp.exe',
     };
-    if (backendConnected) {
+    if (backendConnected && canReachLocalBackend) {
       try {
         const res = await fetch('http://localhost:8080/api/launch', {
           method: 'POST',
@@ -596,7 +627,13 @@ export default function App() {
                       : 'bg-[#FF453A] shadow-[0_0_10px_#FF453A]'
                   }`}
                 />
-                <span>{backendConnected ? 'Backend connected' : 'Disconnected (Browser Preview)'}</span>
+                <span>
+                  {backendConnected
+                    ? 'Backend connected'
+                    : canReachLocalBackend
+                      ? 'Disconnected (Browser Preview)'
+                      : 'Browser Preview (local backend needs http://localhost)'}
+                </span>
               </div>
             </div>
           </header>
