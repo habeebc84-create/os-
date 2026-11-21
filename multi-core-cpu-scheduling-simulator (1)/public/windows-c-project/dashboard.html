@@ -1,0 +1,1817 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Multi-Core CPU Scheduling Simulator</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚙️</text></svg>" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js" defer></script>
+<style>
+  :root {
+    --blue: #0A84FF;
+    --purple: #BF5AF2;
+    --orange: #FF9F0A;
+    --green: #30D158;
+    --red: #FF453A;
+    --cyan: #64D2FF;
+    --glass-bg: rgba(255, 255, 255, 0.08);
+    --glass-bg-strong: rgba(255, 255, 255, 0.12);
+    --glass-border: rgba(255, 255, 255, 0.18);
+    --glass-shadow: 0 20px 50px rgba(0, 0, 0, 0.42), inset 0 1px 1px rgba(255, 255, 255, 0.28);
+    --text-primary: rgba(255, 255, 255, 0.96);
+    --text-secondary: rgba(235, 235, 245, 0.66);
+    --text-muted: rgba(235, 235, 245, 0.45);
+    --radius-xl: 24px;
+    --radius-lg: 18px;
+    --radius-pill: 999px;
+    --spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+    --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', sans-serif;
+    color: var(--text-primary);
+    background: radial-gradient(circle at 15% 10%, #0d1638 0%, #070a19 48%, #130826 100%);
+    min-height: 100vh;
+    overflow-x: hidden;
+    -webkit-font-smoothing: antialiased;
+    letter-spacing: 0.005em;
+  }
+
+  /* Custom thin glass scrollbars */
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-track { background: rgba(255, 255, 255, 0.03); }
+  ::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.22);
+    border-radius: 999px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.36); background-clip: content-box; }
+
+  /* Floating Ambient Orbs + Parallax Layer */
+  .ambient-bg {
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    overflow: hidden;
+    pointer-events: none;
+  }
+  .orb {
+    position: absolute;
+    border-radius: 50%;
+    filter: blur(110px);
+    opacity: 0.42;
+    will-change: transform;
+    transition: transform 0.6s var(--ease-out);
+  }
+  .orb-blue {
+    width: 540px; height: 540px;
+    top: -120px; left: -80px;
+    background: radial-gradient(circle, var(--blue), transparent 70%);
+    animation: orbFloat1 18s ease-in-out infinite alternate;
+  }
+  .orb-purple {
+    width: 560px; height: 560px;
+    bottom: -140px; left: 32%;
+    background: radial-gradient(circle, var(--purple), transparent 70%);
+    animation: orbFloat2 22s ease-in-out infinite alternate;
+  }
+  .orb-orange {
+    width: 480px; height: 480px;
+    top: 18%; right: -120px;
+    background: radial-gradient(circle, var(--orange), transparent 70%);
+    opacity: 0.34;
+    animation: orbFloat3 20s ease-in-out infinite alternate;
+  }
+  @keyframes orbFloat1 {
+    from { transform: translate3d(0, 0, 0) scale(1); }
+    to   { transform: translate3d(60px, 50px, 0) scale(1.12); }
+  }
+  @keyframes orbFloat2 {
+    from { transform: translate3d(0, 0, 0) scale(1.05); }
+    to   { transform: translate3d(-70px, -45px, 0) scale(0.95); }
+  }
+  @keyframes orbFloat3 {
+    from { transform: translate3d(0, 0, 0) scale(1); }
+    to   { transform: translate3d(-55px, 65px, 0) scale(1.1); }
+  }
+
+  /* App Shell Layout */
+  .app-shell {
+    position: relative;
+    z-index: 1;
+    display: grid;
+    grid-template-columns: 268px minmax(0, 1fr);
+    min-height: 100vh;
+    padding: 20px;
+    gap: 20px;
+    max-width: 1640px;
+    margin: 0 auto;
+  }
+
+  /* Liquid Glass Surface */
+  .glass {
+    background: linear-gradient(135deg, rgba(255,255,255,0.11) 0%, rgba(255,255,255,0.05) 100%);
+    backdrop-filter: blur(24px) saturate(180%);
+    -webkit-backdrop-filter: blur(24px) saturate(180%);
+    border: 1px solid var(--glass-border);
+    border-radius: var(--radius-xl);
+    box-shadow: var(--glass-shadow);
+    position: relative;
+  }
+  .glass-card {
+    padding: 22px 24px;
+    transition: transform 0.28s var(--ease-out), box-shadow 0.28s var(--ease-out), border-color 0.28s ease;
+    animation: cardEnter 0.55s var(--ease-out) both;
+  }
+  .glass-card:hover {
+    transform: translateY(-2px);
+    border-color: rgba(255, 255, 255, 0.28);
+    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5), 0 0 28px rgba(10, 132, 255, 0.12), inset 0 1px 1px rgba(255, 255, 255, 0.34);
+  }
+  @keyframes cardEnter {
+    from { opacity: 0; transform: translateY(16px) scale(0.985); }
+    to   { opacity: 1; transform: translateY(0) scale(1); }
+  }
+
+  /* Floating Glass Sidebar */
+  .sidebar {
+    position: sticky;
+    top: 20px;
+    height: calc(100vh - 40px);
+    padding: 22px 14px;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+  }
+  .brand {
+    padding: 4px 10px 20px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+    margin-bottom: 18px;
+  }
+  .brand-title {
+    font-size: 17px;
+    font-weight: 800;
+    letter-spacing: -0.02em;
+    background: linear-gradient(135deg, #fff 20%, #b4d8ff 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .brand-sub {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-top: 4px;
+  }
+
+  .nav-list {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .nav-pill-indicator {
+    position: absolute;
+    left: 0; right: 0;
+    height: 48px;
+    border-radius: 16px;
+    background: linear-gradient(135deg, rgba(10, 132, 255, 0.38), rgba(191, 90, 242, 0.32));
+    border: 1px solid rgba(255, 255, 255, 0.32);
+    box-shadow: 0 8px 24px rgba(10, 132, 255, 0.28), inset 0 1px 1px rgba(255, 255, 255, 0.4);
+    transition: transform 0.36s var(--spring);
+    pointer-events: none;
+    z-index: 0;
+  }
+  .nav-btn {
+    position: relative;
+    z-index: 1;
+    height: 48px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 0 14px;
+    border: none;
+    background: transparent;
+    color: var(--text-secondary);
+    font-family: inherit;
+    font-size: 14px;
+    font-weight: 600;
+    border-radius: 16px;
+    cursor: pointer;
+    text-align: left;
+    transition: color 0.2s ease, transform 0.2s var(--spring);
+    white-space: nowrap;
+  }
+  .nav-btn:hover { color: #fff; transform: translateX(3px); }
+  .nav-btn.active { color: #fff; }
+  .nav-btn svg { width: 20px; height: 20px; flex-shrink: 0; }
+
+  .sidebar-meta {
+    padding: 14px;
+    border-radius: 18px;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    font-size: 12px;
+    color: var(--text-secondary);
+    line-height: 1.5;
+  }
+  .sidebar-meta strong { color: #fff; display: block; margin-bottom: 4px; font-weight: 600; }
+
+  /* Main Column */
+  .main-col {
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+    min-width: 0;
+  }
+
+  /* Glass Top Bar */
+  .topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 22px;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+  .topbar-title {
+    font-size: 16px;
+    font-weight: 700;
+    letter-spacing: -0.015em;
+  }
+  .status-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 9px;
+    padding: 7px 14px;
+    border-radius: var(--radius-pill);
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    font-size: 12.5px;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  .status-dot {
+    width: 9px; height: 9px;
+    border-radius: 50%;
+    background: var(--red);
+    box-shadow: 0 0 10px var(--red);
+    transition: background 0.3s, box-shadow 0.3s;
+  }
+  .status-dot.online {
+    background: var(--green);
+    box-shadow: 0 0 12px var(--green);
+  }
+
+  /* Tab Views */
+  .tab-panel {
+    display: none;
+    flex-direction: column;
+    gap: 18px;
+  }
+  .tab-panel.active {
+    display: flex;
+    animation: tabFade 0.32s var(--ease-out) both;
+  }
+  @keyframes tabFade {
+    from { opacity: 0; transform: scale(0.988) translateY(8px); }
+    to   { opacity: 1; transform: scale(1) translateY(0); }
+  }
+
+  /* Hero Card with Sequential Glowing CORE 0..3 */
+  .hero-card {
+    display: grid;
+    grid-template-columns: 1.35fr 1fr;
+    gap: 24px;
+    align-items: center;
+    padding: 28px 30px;
+    background: linear-gradient(135deg, rgba(10, 132, 255, 0.16) 0%, rgba(191, 90, 242, 0.1) 55%, rgba(255, 159, 10, 0.08) 100%);
+  }
+  .hero-kicker {
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--cyan);
+    margin-bottom: 8px;
+  }
+  .hero-h1 {
+    font-size: clamp(26px, 3vw, 38px);
+    font-weight: 800;
+    line-height: 1.12;
+    letter-spacing: -0.03em;
+    margin-bottom: 10px;
+  }
+  .hero-desc {
+    font-size: 14.5px;
+    color: var(--text-secondary);
+    line-height: 1.55;
+    max-width: 56ch;
+  }
+  .hero-cores {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 12px;
+  }
+  .hero-core-tile {
+    padding: 14px;
+    border-radius: 18px;
+    background: rgba(12, 16, 36, 0.55);
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    animation: coreSeq 3.2s ease-in-out infinite;
+  }
+  .hero-core-tile[data-idx="0"] { color: var(--cyan);   border-color: rgba(100, 210, 255, 0.45); animation-delay: 0s; }
+  .hero-core-tile[data-idx="1"] { color: var(--blue);   border-color: rgba(10, 132, 255, 0.45);  animation-delay: 0.8s; }
+  .hero-core-tile[data-idx="2"] { color: var(--orange); border-color: rgba(255, 159, 10, 0.45);  animation-delay: 1.6s; }
+  .hero-core-tile[data-idx="3"] { color: var(--purple); border-color: rgba(191, 90, 242, 0.45);  animation-delay: 2.4s; }
+  @keyframes coreSeq {
+    0%, 100% { box-shadow: 0 0 0 rgba(255,255,255,0); transform: scale(1); }
+    25%      { box-shadow: 0 0 26px currentColor; transform: scale(1.03); }
+    55%      { box-shadow: 0 0 0 rgba(255,255,255,0); transform: scale(1); }
+  }
+
+  /* Typography & Sections */
+  .section-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 16px;
+    flex-wrap: wrap;
+  }
+  .section-title { font-size: 17px; font-weight: 700; letter-spacing: -0.015em; }
+  .section-sub { font-size: 13px; color: var(--text-secondary); margin-top: 2px; }
+  .tabular { font-variant-numeric: tabular-nums; }
+
+  /* Controls, Inputs & Pill Glass Buttons */
+  .controls-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 12px;
+    align-items: end;
+  }
+  .field label {
+    display: block;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    margin-bottom: 6px;
+  }
+  .glass-input, .glass-select {
+    width: 100%;
+    height: 42px;
+    padding: 0 14px;
+    border-radius: 14px;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    background: rgba(10, 14, 30, 0.55);
+    color: #fff;
+    font-family: inherit;
+    font-size: 14px;
+    outline: none;
+    transition: border-color 0.2s, box-shadow 0.2s, background 0.2s;
+  }
+  .glass-select option { background: #12162b; color: #fff; }
+  .glass-input:focus, .glass-select:focus {
+    border-color: var(--blue);
+    box-shadow: 0 0 0 3px rgba(10, 132, 255, 0.32);
+    background: rgba(14, 20, 44, 0.78);
+  }
+
+  .btn-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  .btn {
+    height: 42px;
+    padding: 0 18px;
+    border-radius: var(--radius-pill);
+    border: 1px solid rgba(255, 255, 255, 0.22);
+    background: rgba(255, 255, 255, 0.1);
+    color: #fff;
+    font-family: inherit;
+    font-size: 13.5px;
+    font-weight: 600;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    white-space: nowrap;
+    transition: transform 0.24s var(--spring), background 0.2s, box-shadow 0.2s;
+  }
+  .btn:hover { transform: scale(1.04); background: rgba(255, 255, 255, 0.17); }
+  .btn:active { transform: scale(0.98); }
+  .btn-primary {
+    border-color: rgba(100, 210, 255, 0.45);
+    background: linear-gradient(135deg, var(--blue) 0%, #4e6bff 55%, var(--purple) 100%);
+    box-shadow: 0 10px 28px rgba(10, 132, 255, 0.42), inset 0 1px 1px rgba(255, 255, 255, 0.45);
+  }
+  .btn-primary:hover { box-shadow: 0 14px 34px rgba(10, 132, 255, 0.58), inset 0 1px 1px rgba(255, 255, 255, 0.55); }
+  .btn-success {
+    border-color: rgba(48, 209, 88, 0.45);
+    background: linear-gradient(135deg, rgba(48, 209, 88, 0.32), rgba(10, 132, 255, 0.22));
+  }
+  .btn-danger {
+    height: 32px; padding: 0 12px; font-size: 12px;
+    border-color: rgba(255, 69, 58, 0.4);
+    background: rgba(255, 69, 58, 0.18);
+    color: #ff9c96;
+  }
+  .btn-sm { height: 34px; padding: 0 14px; font-size: 12.5px; }
+
+  /* Two-Column Split */
+  .grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+  .grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+  .grid-4 { display: grid; grid-template-columns: repeat(auto-fit, minmax(175px, 1fr)); gap: 14px; }
+
+  /* Metric Tiles */
+  .kpi-tile {
+    padding: 18px 20px;
+    border-radius: 20px;
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.13);
+    transition: transform 0.25s var(--spring), border-color 0.25s;
+  }
+  .kpi-tile:hover { transform: translateY(-2px); border-color: rgba(255, 255, 255, 0.26); }
+  .kpi-label { font-size: 12px; color: var(--text-secondary); font-weight: 600; margin-bottom: 6px; }
+  .kpi-value { font-size: 26px; font-weight: 800; letter-spacing: -0.025em; font-variant-numeric: tabular-nums; }
+  .kpi-hint  { font-size: 11.5px; color: var(--text-muted); margin-top: 4px; }
+
+  /* Live Core Cards */
+  .core-cards-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+    gap: 14px;
+  }
+  .core-card {
+    padding: 16px 18px;
+    border-radius: 20px;
+    background: rgba(12, 16, 34, 0.56);
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    transition: all 0.3s var(--ease-out);
+  }
+  .core-card.busy {
+    border-color: rgba(10, 132, 255, 0.65);
+    box-shadow: 0 0 26px rgba(10, 132, 255, 0.28), inset 0 1px 1px rgba(255,255,255,0.25);
+    animation: corePulse 1.8s ease-in-out infinite;
+  }
+  .core-card.idle { opacity: 0.62; }
+  @keyframes corePulse {
+    0%, 100% { box-shadow: 0 0 16px rgba(10, 132, 255, 0.22); }
+    50%      { box-shadow: 0 0 32px rgba(10, 132, 255, 0.52); }
+  }
+  .core-card-top {
+    display: flex; align-items: center; justify-content: space-between;
+    font-size: 12px; font-weight: 700; color: var(--text-secondary); margin-bottom: 10px;
+  }
+  .core-pid {
+    font-size: 20px; font-weight: 800; letter-spacing: -0.02em; margin-bottom: 8px;
+  }
+  .progress-track {
+    height: 7px; border-radius: 999px; background: rgba(255,255,255,0.1); overflow: hidden;
+  }
+  .progress-fill {
+    height: 100%; border-radius: 999px;
+    background: linear-gradient(90deg, var(--blue), var(--purple));
+    transition: width 0.55s var(--ease-out);
+  }
+
+  /* Multi-Core Gantt Chart */
+  .gantt-wrap {
+    position: relative;
+    overflow-x: auto;
+    padding: 8px 4px 12px;
+  }
+  .gantt-inner {
+    position: relative;
+    min-width: 640px;
+  }
+  .gantt-row {
+    display: grid;
+    grid-template-columns: 82px 1fr;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 10px;
+  }
+  .gantt-core-label {
+    font-size: 12.5px;
+    font-weight: 700;
+    color: var(--text-secondary);
+    text-align: right;
+    padding-right: 4px;
+  }
+  .gantt-track {
+    position: relative;
+    height: 44px;
+    border-radius: 14px;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    overflow: hidden;
+  }
+  .gantt-seg {
+    position: absolute;
+    top: 4px; bottom: 4px;
+    border-radius: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    font-weight: 700;
+    color: #fff;
+    text-shadow: 0 1px 3px rgba(0,0,0,0.45);
+    transform-origin: left center;
+    animation: ganttGrow 0.6s var(--ease-out) both;
+    transition: opacity 0.25s, filter 0.25s, transform 0.2s;
+    cursor: default;
+    overflow: hidden;
+    white-space: nowrap;
+    padding: 0 4px;
+  }
+  .gantt-seg:hover { filter: brightness(1.15); z-index: 3; }
+  .gantt-seg.idle {
+    background: repeating-linear-gradient(
+      -45deg,
+      rgba(255,255,255,0.08),
+      rgba(255,255,255,0.08) 6px,
+      rgba(255,255,255,0.03) 6px,
+      rgba(255,255,255,0.03) 12px
+    );
+    color: rgba(255,255,255,0.42);
+    border: 1px dashed rgba(255,255,255,0.14);
+  }
+  .gantt-seg.dimmed { opacity: 0.22; filter: saturate(0.35); }
+  .gantt-seg.lit { box-shadow: 0 0 22px rgba(255,255,255,0.55); transform: scaleY(1.06); z-index: 4; }
+  @keyframes ganttGrow {
+    from { transform: scaleX(0); opacity: 0.4; }
+    to   { transform: scaleX(1); opacity: 1; }
+  }
+  .gantt-playhead {
+    position: absolute;
+    top: 0; bottom: 26px;
+    width: 3px;
+    border-radius: 999px;
+    background: linear-gradient(180deg, #fff, var(--cyan), var(--blue));
+    box-shadow: 0 0 18px var(--cyan), 0 0 32px var(--blue);
+    pointer-events: none;
+    z-index: 10;
+    display: none;
+  }
+  .gantt-axis {
+    display: grid;
+    grid-template-columns: 82px 1fr;
+    gap: 12px;
+    margin-top: 6px;
+  }
+  .gantt-ticks {
+    position: relative;
+    height: 22px;
+    font-size: 11px;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .gantt-tick-label {
+    position: absolute;
+    transform: translateX(-50%);
+    top: 2px;
+  }
+
+  /* Tables */
+  .table-wrap { overflow-x: auto; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13.5px;
+    font-variant-numeric: tabular-nums;
+  }
+  th {
+    text-align: left;
+    padding: 11px 12px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.14);
+    white-space: nowrap;
+  }
+  th.sortable { cursor: pointer; user-select: none; }
+  th.sortable:hover { color: #fff; }
+  td {
+    padding: 11px 12px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+    white-space: nowrap;
+  }
+  tbody tr {
+    transition: background 0.18s;
+    animation: rowIn 0.35s var(--ease-out) both;
+  }
+  tbody tr:hover { background: rgba(255, 255, 255, 0.06); }
+  tbody tr.new-proc { animation: slideInNew 0.45s var(--spring) both; }
+  @keyframes rowIn {
+    from { opacity: 0; transform: translateY(6px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes slideInNew {
+    from { opacity: 0; transform: translateX(-14px); background: rgba(48, 209, 88, 0.2); }
+    to   { opacity: 1; transform: translateX(0); background: transparent; }
+  }
+  .best-cell {
+    color: var(--green);
+    font-weight: 800;
+    text-shadow: 0 0 14px rgba(48, 209, 88, 0.45);
+  }
+  .proc-swatch {
+    display: inline-block;
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    margin-right: 8px;
+    vertical-align: middle;
+  }
+
+  /* Circular SVG Gauges */
+  .gauge-card {
+    display: flex;
+    align-items: center;
+    gap: 22px;
+    flex-wrap: wrap;
+  }
+  .gauge-svg-wrap { position: relative; width: 148px; height: 148px; flex-shrink: 0; }
+  .gauge-svg { width: 148px; height: 148px; transform: rotate(-90deg); }
+  .gauge-bg { fill: none; stroke: rgba(255,255,255,0.1); stroke-width: 12; }
+  .gauge-fg {
+    fill: none; stroke-width: 12; stroke-linecap: round;
+    transition: stroke-dashoffset 0.65s var(--ease-out);
+  }
+  .gauge-center {
+    position: absolute; inset: 0;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+  }
+  .gauge-num { font-size: 28px; font-weight: 800; font-variant-numeric: tabular-nums; }
+  .gauge-unit { font-size: 11.5px; color: var(--text-secondary); font-weight: 600; }
+
+  /* Chart Containers */
+  .chart-box { position: relative; height: 250px; width: 100%; }
+  .chart-fallback {
+    height: 220px; display: flex; align-items: center; justify-content: center; text-align: center;
+    color: var(--text-secondary); font-size: 13.5px; padding: 20px;
+    border-radius: 16px; background: rgba(255,255,255,0.04); border: 1px dashed rgba(255,255,255,0.16);
+  }
+
+  /* Shimmer Skeleton */
+  .skeleton {
+    height: 18px;
+    border-radius: 10px;
+    background: linear-gradient(90deg, rgba(255,255,255,0.06) 25%, rgba(255,255,255,0.16) 50%, rgba(255,255,255,0.06) 75%);
+    background-size: 200% 100%;
+    animation: shimmer 1.4s infinite linear;
+  }
+  @keyframes shimmer {
+    from { background-position: 200% 0; }
+    to   { background-position: -200% 0; }
+  }
+
+  /* Glass Footer */
+  .footer-note {
+    padding: 14px 20px;
+    font-size: 12.5px;
+    color: var(--text-secondary);
+    text-align: center;
+    line-height: 1.5;
+  }
+
+  /* Toast Notifications */
+  .toast-stack {
+    position: fixed;
+    bottom: 24px; right: 24px;
+    z-index: 999;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    pointer-events: none;
+  }
+  .toast {
+    pointer-events: auto;
+    padding: 13px 18px;
+    border-radius: 18px;
+    background: rgba(20, 26, 52, 0.84);
+    backdrop-filter: blur(24px) saturate(180%);
+    -webkit-backdrop-filter: blur(24px) saturate(180%);
+    border: 1px solid rgba(255, 255, 255, 0.24);
+    box-shadow: 0 14px 36px rgba(0,0,0,0.5);
+    color: #fff;
+    font-size: 13.5px;
+    font-weight: 600;
+    display: flex; align-items: center; gap: 10px;
+    animation: toastIn 0.35s var(--spring) both;
+  }
+  .toast.out { animation: toastOut 0.25s ease forwards; }
+  @keyframes toastIn {
+    from { opacity: 0; transform: translateY(16px) scale(0.94); }
+    to   { opacity: 1; transform: translateY(0) scale(1); }
+  }
+  @keyframes toastOut {
+    to { opacity: 0; transform: translateY(8px) scale(0.95); }
+  }
+
+  /* Responsive */
+  @media (max-width: 1060px) {
+    .app-shell { grid-template-columns: 1fr; padding: 14px; }
+    .sidebar { position: static; height: auto; }
+    .nav-list { flex-direction: row; flex-wrap: wrap; }
+    .nav-pill-indicator { display: none; }
+    .nav-btn.active { background: linear-gradient(135deg, rgba(10,132,255,0.4), rgba(191,90,242,0.3)); }
+    .hero-card, .grid-2, .grid-3 { grid-template-columns: 1fr; }
+  }
+
+  /* Accessibility: Respect Reduced Motion */
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+</style>
+</head>
+<body>
+  <div class="ambient-bg" id="ambientBg">
+    <div class="orb orb-blue" data-depth="18"></div>
+    <div class="orb orb-purple" data-depth="26"></div>
+    <div class="orb orb-orange" data-depth="14"></div>
+  </div>
+
+  <div class="app-shell">
+    <!-- Floating Glass Sidebar -->
+    <aside class="sidebar glass">
+      <div>
+        <div class="brand">
+          <div class="brand-title">CoreOS Simulator</div>
+          <div class="brand-sub">C11 Multi-Core Engine &amp; Monitor</div>
+        </div>
+        <nav class="nav-list" id="navList">
+          <div class="nav-pill-indicator" id="navPill"></div>
+          <button class="nav-btn active" data-tab="scheduler" data-index="0">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="4"/><rect x="9" y="9" width="6" height="6" rx="1.5"/><path d="M9 2v2M15 2v2M9 20v2M15 20v2M2 9h2M2 15h2M20 9h2M20 15h2"/></svg>
+            Scheduling Simulator
+          </button>
+          <button class="nav-btn" data-tab="hardware" data-index="1">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+            Live Hardware Monitor
+          </button>
+          <button class="nav-btn" data-tab="processes" data-index="2">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M7 9h10M7 13h6M7 17h4"/></svg>
+            Process Monitor
+          </button>
+          <button class="nav-btn" data-tab="analytics" data-index="3">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 20V10M12 20V4M6 20v-6"/></svg>
+            Performance Analytics
+          </button>
+        </nav>
+      </div>
+      <div class="sidebar-meta">
+        <strong>Operating Systems Lab</strong>
+        Pure C11 Winsock2 + Win32 Threads (`CreateThread`, `CRITICAL_SECTION`, `GetSystemTimes`).
+      </div>
+    </aside>
+
+    <!-- Main Workspace -->
+    <div class="main-col">
+      <header class="topbar glass">
+        <div class="topbar-title">Multi-Core CPU Scheduling Simulator</div>
+        <div class="status-pill" id="backendStatus">
+          <span class="status-dot" id="statusDot"></span>
+          <span id="statusText">Connecting...</span>
+        </div>
+      </header>
+
+      <!-- ================= TAB 1: SCHEDULING SIMULATOR ================= -->
+      <section class="tab-panel active" id="tab-scheduler">
+        <div class="glass glass-card hero-card" style="animation-delay:0.02s">
+          <div>
+            <div class="hero-kicker">Operating Systems · Multi-Core Engine</div>
+            <h1 class="hero-h1">Multi-Core CPU Scheduling Simulator</h1>
+            <p class="hero-desc">
+              Configure processes, core count, and scheduling policies. Every simulated core executes on a real Windows worker thread synchronized with a dispatcher ready queue and clock barrier.
+            </p>
+          </div>
+          <div class="hero-cores">
+            <div class="hero-core-tile" data-idx="0">
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="5" width="14" height="14" rx="3"/><rect x="9" y="9" width="6" height="6" rx="1"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/></svg>
+              CORE 0
+            </div>
+            <div class="hero-core-tile" data-idx="1">
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="5" width="14" height="14" rx="3"/><rect x="9" y="9" width="6" height="6" rx="1"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/></svg>
+              CORE 1
+            </div>
+            <div class="hero-core-tile" data-idx="2">
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="5" width="14" height="14" rx="3"/><rect x="9" y="9" width="6" height="6" rx="1"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/></svg>
+              CORE 2
+            </div>
+            <div class="hero-core-tile" data-idx="3">
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="5" width="14" height="14" rx="3"/><rect x="9" y="9" width="6" height="6" rx="1"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/></svg>
+              CORE 3
+            </div>
+          </div>
+        </div>
+
+        <!-- Simulation Config + Process Builder -->
+        <div class="grid-2">
+          <div class="glass glass-card" style="animation-delay:0.08s">
+            <div class="section-head">
+              <div>
+                <div class="section-title">Simulation Parameters</div>
+                <div class="section-sub">Choose algorithm, core topology, and preemption mode</div>
+              </div>
+            </div>
+            <div class="controls-grid">
+              <div class="field">
+                <label for="algSelect">Algorithm</label>
+                <select id="algSelect" class="glass-select">
+                  <option value="FCFS">FCFS (Non-Preemptive)</option>
+                  <option value="SJF">SJF (Non-Preemptive)</option>
+                  <option value="SRTF">SRTF (Preemptive)</option>
+                  <option value="Priority">Priority Scheduling</option>
+                  <option value="Round Robin">Round Robin</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="coresInput">CPU Cores (1–8)</label>
+                <input id="coresInput" type="number" min="1" max="8" value="2" class="glass-input tabular" />
+              </div>
+              <div class="field">
+                <label for="quantumInput">Time Quantum (RR)</label>
+                <input id="quantumInput" type="number" min="1" max="50" value="3" class="glass-input tabular" />
+              </div>
+              <div class="field">
+                <label for="prioModeSelect">Priority Mode</label>
+                <select id="prioModeSelect" class="glass-select">
+                  <option value="preemptive">Preemptive</option>
+                  <option value="non-preemptive">Non-Preemptive</option>
+                </select>
+              </div>
+            </div>
+            <div class="btn-row" style="margin-top:18px;">
+              <button class="btn btn-primary" id="runSimBtn">Run Simulation</button>
+              <button class="btn" id="loadSampleBtn">Load Sample Data</button>
+              <button class="btn" id="randomProcBtn">Random Generator</button>
+            </div>
+          </div>
+
+          <div class="glass glass-card" style="animation-delay:0.14s">
+            <div class="section-head">
+              <div>
+                <div class="section-title">Add Process</div>
+                <div class="section-sub">Lower priority number = higher urgency</div>
+              </div>
+            </div>
+            <div class="controls-grid">
+              <div class="field">
+                <label for="inPid">PID</label>
+                <input id="inPid" type="text" value="P6" class="glass-input" />
+              </div>
+              <div class="field">
+                <label for="inArr">Arrival</label>
+                <input id="inArr" type="number" min="0" value="0" class="glass-input tabular" />
+              </div>
+              <div class="field">
+                <label for="inBurst">Burst</label>
+                <input id="inBurst" type="number" min="1" value="5" class="glass-input tabular" />
+              </div>
+              <div class="field">
+                <label for="inPrio">Priority</label>
+                <input id="inPrio" type="number" min="1" value="2" class="glass-input tabular" />
+              </div>
+            </div>
+            <div class="btn-row" style="margin-top:16px;">
+              <button class="btn btn-success" id="addProcBtn">+ Add Process</button>
+              <button class="btn" id="clearProcBtn">Clear Queue</button>
+            </div>
+            <div class="table-wrap" style="margin-top:14px; max-height:190px; overflow-y:auto;">
+              <table>
+                <thead>
+                  <tr><th>PID</th><th>Arrival</th><th>Burst</th><th>Priority</th><th></th></tr>
+                </thead>
+                <tbody id="inputProcBody"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- Live Core Status Cards -->
+        <div class="glass glass-card" style="animation-delay:0.18s">
+          <div class="section-head">
+            <div>
+              <div class="section-title">Live Multi-Core Execution Units</div>
+              <div class="section-sub" id="liveTickSub">Run a simulation and press Play to watch processes move across cores</div>
+            </div>
+            <div class="btn-row">
+              <button class="btn btn-primary btn-sm" id="playBtn">Play Replay</button>
+              <button class="btn btn-sm" id="resetPlayBtn">Reset</button>
+            </div>
+          </div>
+          <div class="core-cards-grid" id="coreCardsGrid"></div>
+        </div>
+
+        <!-- Multi-Core Gantt Chart -->
+        <div class="glass glass-card" style="animation-delay:0.22s">
+          <div class="section-head">
+            <div>
+              <div class="section-title">Multi-Core Gantt Timeline</div>
+              <div class="section-sub" id="ganttSubtitle">One row per core · Vibrant process segments · Striped idle intervals</div>
+            </div>
+            <div id="playTickBadge" class="tabular" style="font-size:13px; color:var(--cyan); font-weight:700;">Tick: —</div>
+          </div>
+          <div class="gantt-wrap">
+            <div class="gantt-inner" id="ganttContainer">
+              <div style="padding:26px; text-align:center; color:var(--text-secondary);">Click <strong>Run Simulation</strong> to generate the multi-core Gantt chart.</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Performance KPI Summary + Results Table -->
+        <div class="grid-4" id="simKpiGrid">
+          <div class="glass kpi-tile"><div class="kpi-label">Avg Turnaround</div><div class="kpi-value" id="kpiTat">0.00</div><div class="kpi-hint">Completion − Arrival</div></div>
+          <div class="glass kpi-tile"><div class="kpi-label">Avg Waiting</div><div class="kpi-value" id="kpiWt">0.00</div><div class="kpi-hint">Turnaround − Burst</div></div>
+          <div class="glass kpi-tile"><div class="kpi-label">Avg Response</div><div class="kpi-value" id="kpiRt">0.00</div><div class="kpi-hint">First Start − Arrival</div></div>
+          <div class="glass kpi-tile"><div class="kpi-label">CPU Utilization</div><div class="kpi-value" id="kpiCpu">0.0%</div><div class="kpi-hint">Busy / (Cores × Makespan)</div></div>
+          <div class="glass kpi-tile"><div class="kpi-label">Throughput</div><div class="kpi-value" id="kpiThru">0.000</div><div class="kpi-hint">Processes per tick</div></div>
+          <div class="glass kpi-tile"><div class="kpi-label">Context Switches</div><div class="kpi-value" id="kpiCs">0</div><div class="kpi-hint">Core process handoffs</div></div>
+          <div class="glass kpi-tile"><div class="kpi-label">Total Idle Time</div><div class="kpi-value" id="kpiIdle">0</div><div class="kpi-hint">Across all cores</div></div>
+          <div class="glass kpi-tile"><div class="kpi-label">Makespan</div><div class="kpi-value" id="kpiMake">0</div><div class="kpi-hint">Total ticks elapsed</div></div>
+        </div>
+
+        <div class="glass glass-card" style="animation-delay:0.26s">
+          <div class="section-head">
+            <div>
+              <div class="section-title">Per-Process Scheduling Metrics</div>
+              <div class="section-sub">Exact Module 3 timing breakdown</div>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>PID</th><th>Arrival</th><th>Burst</th><th>Priority</th>
+                  <th>First Start</th><th>Completion</th><th>Turnaround</th><th>Waiting</th><th>Response</th>
+                </tr>
+              </thead>
+              <tbody id="resultsTableBody">
+                <tr><td colspan="9" style="text-align:center; color:var(--text-muted); padding:22px;">No simulation results yet.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= TAB 2: LIVE HARDWARE MONITOR ================= -->
+      <section class="tab-panel" id="tab-hardware">
+        <div class="grid-3">
+          <div class="glass glass-card">
+            <div class="kpi-label">Processor Model (Windows Registry)</div>
+            <div id="hwCpuModel" style="font-size:17px; font-weight:700; margin-top:6px; line-height:1.35;">
+              <div class="skeleton" style="width:85%;"></div>
+            </div>
+          </div>
+          <div class="glass glass-card">
+            <div class="kpi-label">Physical Cores</div>
+            <div class="kpi-value" id="hwPhysCores"><div class="skeleton" style="width:60px; height:28px;"></div></div>
+            <div class="kpi-hint">via GetLogicalProcessorInformation</div>
+          </div>
+          <div class="glass glass-card">
+            <div class="kpi-label">Logical Processors</div>
+            <div class="kpi-value" id="hwLogCores"><div class="skeleton" style="width:60px; height:28px;"></div></div>
+            <div class="kpi-hint">Hardware execution threads</div>
+          </div>
+        </div>
+
+        <div class="grid-2">
+          <div class="glass glass-card gauge-card">
+            <div class="gauge-svg-wrap">
+              <svg class="gauge-svg" viewBox="0 0 140 140">
+                <defs>
+                  <linearGradient id="cpuGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+                    <stop offset="0%" stop-color="#0A84FF"/>
+                    <stop offset="100%" stop-color="#64D2FF"/>
+                  </linearGradient>
+                </defs>
+                <circle class="gauge-bg" cx="70" cy="70" r="56"/>
+                <circle class="gauge-fg" id="cpuGaugeArc" cx="70" cy="70" r="56" stroke="url(#cpuGrad)" stroke-dasharray="351.86" stroke-dashoffset="351.86"/>
+              </svg>
+              <div class="gauge-center">
+                <div class="gauge-num" id="liveCpuText">0.0%</div>
+                <div class="gauge-unit">CPU Load</div>
+              </div>
+            </div>
+            <div style="flex:1; min-width:180px;">
+              <div class="section-title">Live System CPU Utilization</div>
+              <div class="section-sub" style="margin-top:6px; line-height:1.5;">Sampled every 1 second using Windows <code>GetSystemTimes</code> delta between idle, kernel, and user counters.</div>
+            </div>
+          </div>
+
+          <div class="glass glass-card gauge-card">
+            <div class="gauge-svg-wrap">
+              <svg class="gauge-svg" viewBox="0 0 140 140">
+                <defs>
+                  <linearGradient id="ramGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+                    <stop offset="0%" stop-color="#BF5AF2"/>
+                    <stop offset="100%" stop-color="#FF9F0A"/>
+                  </linearGradient>
+                </defs>
+                <circle class="gauge-bg" cx="70" cy="70" r="56"/>
+                <circle class="gauge-fg" id="ramGaugeArc" cx="70" cy="70" r="56" stroke="url(#ramGrad)" stroke-dasharray="351.86" stroke-dashoffset="351.86"/>
+              </svg>
+              <div class="gauge-center">
+                <div class="gauge-num" id="liveRamText">0.0%</div>
+                <div class="gauge-unit">Memory</div>
+              </div>
+            </div>
+            <div style="flex:1; min-width:180px;">
+              <div class="section-title">Live Physical Memory (RAM)</div>
+              <div class="section-sub tabular" id="ramDetailText" style="margin-top:6px; font-weight:600; color:#fff;">Waiting for sample...</div>
+              <div class="section-sub" style="margin-top:4px;">Observed via <code>GlobalMemoryStatusEx</code></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="grid-2">
+          <div class="glass glass-card">
+            <div class="section-head">
+              <div><div class="section-title">CPU Utilization — Last 60 Seconds</div><div class="section-sub">Real-time 1 Hz rolling window</div></div>
+            </div>
+            <div class="chart-box" id="cpuChartWrap"><canvas id="cpuLineChart"></canvas></div>
+          </div>
+          <div class="glass glass-card">
+            <div class="section-head">
+              <div><div class="section-title">RAM Utilization — Last 60 Seconds</div><div class="section-sub">Real-time 1 Hz rolling window</div></div>
+            </div>
+            <div class="chart-box" id="ramChartWrap"><canvas id="ramLineChart"></canvas></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= TAB 3: PROCESS MONITOR ================= -->
+      <section class="tab-panel" id="tab-processes">
+        <div class="glass glass-card">
+          <div class="section-head">
+            <div>
+              <div class="section-title">Approved Application Launcher (Hardcoded Whitelist)</div>
+              <div class="section-sub">Launch via Win32 <code>CreateProcessA</code> with optional <code>SetProcessAffinityMask</code> core pinning</div>
+            </div>
+            <div style="display:flex; align-items:center; gap:10px;">
+              <label for="pinCoreSelect" style="font-size:12.5px; color:var(--text-secondary); font-weight:600;">Pin to Core:</label>
+              <select id="pinCoreSelect" class="glass-select" style="width:150px; height:38px;">
+                <option value="-1">OS Default (Auto)</option>
+              </select>
+            </div>
+          </div>
+          <div class="btn-row">
+            <button class="btn btn-primary" onclick="launchApp('chrome')">Launch Chrome</button>
+            <button class="btn btn-primary" onclick="launchApp('vscode')">Launch VS Code</button>
+            <button class="btn btn-success" onclick="launchApp('notepad')">Launch Notepad</button>
+            <button class="btn btn-success" onclick="launchApp('calculator')">Launch Calculator</button>
+          </div>
+        </div>
+
+        <div class="glass glass-card">
+          <div class="section-head">
+            <div>
+              <div class="section-title">Running Windows Processes (<span id="procCountText" class="tabular">0</span>)</div>
+              <div class="section-sub">Observed via <code>CreateToolhelp32Snapshot</code> + <code>GetProcessMemoryInfo</code></div>
+            </div>
+            <div class="btn-row">
+              <input id="procSearch" type="text" placeholder="Search name or PID..." class="glass-input" style="width:230px; height:38px;" />
+              <button class="btn btn-sm" id="refreshProcsBtn">Refresh Now</button>
+            </div>
+          </div>
+          <div class="table-wrap" style="max-height:470px; overflow-y:auto;">
+            <table>
+              <thead>
+                <tr>
+                  <th class="sortable" data-sort="name">Process Name ↕</th>
+                  <th class="sortable" data-sort="pid">PID ↕</th>
+                  <th class="sortable" data-sort="memoryMB">Working Set Memory (MB) ↕</th>
+                </tr>
+              </thead>
+              <tbody id="osProcTableBody">
+                <tr><td colspan="3"><div class="skeleton" style="width:100%; margin:6px 0;"></div><div class="skeleton" style="width:92%; margin:6px 0;"></div><div class="skeleton" style="width:80%; margin:6px 0;"></div></td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= TAB 4: PERFORMANCE ANALYTICS ================= -->
+      <section class="tab-panel" id="tab-analytics">
+        <div class="glass glass-card">
+          <div class="section-head" style="margin-bottom:0;">
+            <div>
+              <div class="section-title">Multi-Algorithm Comparative Analysis</div>
+              <div class="section-sub">Runs FCFS, SJF, SRTF, Priority, and Round Robin on the exact same process workload</div>
+            </div>
+            <div class="btn-row">
+              <button class="btn btn-primary" id="compareAllBtn">Compare All Algorithms</button>
+              <button class="btn btn-success" id="downloadCsvBtn">Download CSV Report</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="glass glass-card">
+          <div class="section-head">
+            <div>
+              <div class="section-title">Comparative Metrics Matrix</div>
+              <div class="section-sub">Best performer for each criterion is highlighted in green</div>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Algorithm</th>
+                  <th>Avg Waiting ↓</th>
+                  <th>Avg Turnaround ↓</th>
+                  <th>Avg Response ↓</th>
+                  <th>CPU Utilization ↑</th>
+                  <th>Throughput ↑</th>
+                  <th>Context Switches ↓</th>
+                  <th>Makespan</th>
+                </tr>
+              </thead>
+              <tbody id="compareTableBody">
+                <tr><td colspan="8" style="text-align:center; color:var(--text-muted); padding:24px;">Click <strong>Compare All Algorithms</strong> to benchmark all 5 schedulers.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="grid-2">
+          <div class="glass glass-card">
+            <div class="section-head"><div class="section-title">Timing Metrics (Waiting, Turnaround, Response)</div></div>
+            <div class="chart-box" id="cmpTimingWrap"><canvas id="cmpTimingChart"></canvas></div>
+          </div>
+          <div class="glass glass-card">
+            <div class="section-head"><div class="section-title">CPU Utilization (%) &amp; Context Switches</div></div>
+            <div class="chart-box" id="cmpUtilWrap"><canvas id="cmpUtilChart"></canvas></div>
+          </div>
+        </div>
+      </section>
+
+      <footer class="glass footer-note">
+        The agent observes real Windows activity. The simulator models scheduling independently and does not control the Windows kernel scheduler.
+      </footer>
+    </div>
+  </div>
+
+  <div class="toast-stack" id="toastStack"></div>
+
+<script>
+(() => {
+  const API_BASE = '';
+  const PROC_GRADIENTS = [
+    'linear-gradient(135deg, #0A84FF, #38BDF8)',
+    'linear-gradient(135deg, #BF5AF2, #EC4899)',
+    'linear-gradient(135deg, #FF9F0A, #F97316)',
+    'linear-gradient(135deg, #30D158, #10B981)',
+    'linear-gradient(135deg, #FF453A, #F43F5E)',
+    'linear-gradient(135deg, #5E5CE6, #818CF8)',
+    'linear-gradient(135deg, #64D2FF, #06B6D4)',
+    'linear-gradient(135deg, #FFD60A, #F59E0B)'
+  ];
+  const PROC_SOLID = ['#0A84FF','#BF5AF2','#FF9F0A','#30D158','#FF453A','#5E5CE6','#64D2FF','#FFD60A'];
+
+  let processList = [
+    { pid: 'P1', arrival: 0, burst: 8, priority: 3 },
+    { pid: 'P2', arrival: 1, burst: 4, priority: 1 },
+    { pid: 'P3', arrival: 2, burst: 9, priority: 4 },
+    { pid: 'P4', arrival: 3, burst: 5, priority: 2 },
+    { pid: 'P5', arrival: 4, burst: 2, priority: 5 }
+  ];
+  let pidColorMap = {};
+  let lastSim = null;
+  let playRaf = null;
+  let isPlaying = false;
+  let playProgress = 0;
+
+  let osProcesses = [];
+  let knownPids = new Set();
+  let procSort = { key: 'memoryMB', dir: -1 };
+  let cpuHistory = Array(60).fill(null);
+  let ramHistory = Array(60).fill(null);
+  let timeLabels = Array.from({ length: 60 }, (_, i) => `${i - 59}s`);
+  let cpuChart = null, ramChart = null, cmpTimingChart = null, cmpUtilChart = null;
+  let activeTab = 'scheduler';
+
+  const $ = (id) => document.getElementById(id);
+
+  function getPidIndex(pid) {
+    if (!(pid in pidColorMap)) {
+      pidColorMap[pid] = Object.keys(pidColorMap).length % PROC_GRADIENTS.length;
+    }
+    return pidColorMap[pid];
+  }
+
+  /* Toast Notifications */
+  function showToast(msg, accent = '#0A84FF') {
+    const el = document.createElement('div');
+    el.className = 'toast';
+    el.innerHTML = `<span style="width:9px;height:9px;border-radius:50%;background:${accent};box-shadow:0 0 10px ${accent};flex-shrink:0;"></span><span>${escapeHtml(msg)}</span>`;
+    $('toastStack').appendChild(el);
+    setTimeout(() => {
+      el.classList.add('out');
+      setTimeout(() => el.remove(), 260);
+    }, 3100);
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+  }
+
+  /* Animated Count-Up for Metric Numbers */
+  function animateNumber(el, target, decimals = 2, suffix = '') {
+    const startVal = parseFloat(el.dataset.val || '0') || 0;
+    const duration = 480;
+    const startTime = performance.now();
+    el.dataset.val = String(target);
+    function step(now) {
+      const p = Math.min(1, (now - startTime) / duration);
+      const ease = 1 - Math.pow(1 - p, 3);
+      const cur = startVal + (target - startVal) * ease;
+      el.textContent = cur.toFixed(decimals) + suffix;
+      if (p < 1) requestAnimationFrame(step);
+    }
+    requestAnimationFrame(step);
+  }
+
+  /* Subtle Mouse-Move Parallax on Background Orbs */
+  if (!window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    const orbs = document.querySelectorAll('.orb');
+    window.addEventListener('mousemove', (e) => {
+      const nx = (e.clientX / window.innerWidth - 0.5) * 2;
+      const ny = (e.clientY / window.innerHeight - 0.5) * 2;
+      orbs.forEach(orb => {
+        const d = Number(orb.dataset.depth || 16);
+        orb.style.marginLeft = `${nx * d}px`;
+        orb.style.marginTop  = `${ny * d}px`;
+      });
+    }, { passive: true });
+  }
+
+  /* Sidebar Sliding Pill Navigation */
+  const navBtns = document.querySelectorAll('.nav-btn');
+  const navPill = $('navPill');
+  function switchTab(tabName, idx) {
+    activeTab = tabName;
+    navBtns.forEach(b => b.classList.toggle('active', b.dataset.tab === tabName));
+    if (navPill) navPill.style.transform = `translateY(${idx * 56}px)`;
+    document.querySelectorAll('.tab-panel').forEach(p => {
+      p.classList.toggle('active', p.id === `tab-${tabName}`);
+    });
+    if (tabName === 'processes') fetchProcesses();
+    if (tabName === 'hardware') initLiveCharts();
+  }
+  navBtns.forEach(btn => {
+    btn.addEventListener('click', () => switchTab(btn.dataset.tab, Number(btn.dataset.index)));
+  });
+
+  /* Render Input Process Queue */
+  function renderInputTable() {
+    const tbody = $('inputProcBody');
+    if (!processList.length) {
+      tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--text-muted);">Queue empty. Add a process or load sample data.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = processList.map((p, idx) => {
+      const ci = getPidIndex(p.pid);
+      return `<tr style="animation-delay:${idx * 25}ms">
+        <td><span class="proc-swatch" style="background:${PROC_SOLID[ci]}"></span><strong>${escapeHtml(p.pid)}</strong></td>
+        <td>${p.arrival}</td>
+        <td>${p.burst}</td>
+        <td>${p.priority}</td>
+        <td style="text-align:right;"><button class="btn btn-danger" onclick="removeProcess(${idx})">Remove</button></td>
+      </tr>`;
+    }).join('');
+    $('inPid').value = `P${processList.length + 1}`;
+  }
+
+  window.removeProcess = function(idx) {
+    processList.splice(idx, 1);
+    renderInputTable();
+  };
+
+  $('addProcBtn').addEventListener('click', () => {
+    const pid = ($('inPid').value || `P${processList.length + 1}`).trim();
+    const arrival = Math.max(0, parseInt($('inArr').value, 10) || 0);
+    const burst = Math.max(1, parseInt($('inBurst').value, 10) || 1);
+    const priority = Math.max(1, parseInt($('inPrio').value, 10) || 1);
+    processList.push({ pid, arrival, burst, priority });
+    renderInputTable();
+    showToast(`Added process ${pid}`, '#30D158');
+  });
+
+  $('clearProcBtn').addEventListener('click', () => {
+    processList = [];
+    renderInputTable();
+  });
+
+  $('loadSampleBtn').addEventListener('click', () => {
+    processList = [
+      { pid: 'P1', arrival: 0, burst: 8, priority: 3 },
+      { pid: 'P2', arrival: 1, burst: 4, priority: 1 },
+      { pid: 'P3', arrival: 2, burst: 9, priority: 4 },
+      { pid: 'P4', arrival: 3, burst: 5, priority: 2 },
+      { pid: 'P5', arrival: 4, burst: 2, priority: 5 }
+    ];
+    $('coresInput').value = 2;
+    $('quantumInput').value = 3;
+    pidColorMap = {};
+    renderInputTable();
+    showToast('Sample workload loaded (P1–P5, 2 cores, Q=3)', '#0A84FF');
+  });
+
+  $('randomProcBtn').addEventListener('click', () => {
+    const n = 5 + Math.floor(Math.random() * 4);
+    processList = [];
+    pidColorMap = {};
+    for (let i = 1; i <= n; i++) {
+      processList.push({
+        pid: `P${i}`,
+        arrival: Math.floor(Math.random() * 8),
+        burst: 2 + Math.floor(Math.random() * 9),
+        priority: 1 + Math.floor(Math.random() * 5)
+      });
+    }
+    renderInputTable();
+    showToast(`Generated ${n} random processes`, '#BF5AF2');
+  });
+
+  /* Run Multi-Core Simulation */
+  async function runSimulation() {
+    if (!processList.length) {
+      showToast('Add at least one process first', '#FF453A');
+      return;
+    }
+    stopReplay();
+    const payload = {
+      processes: processList,
+      algorithm: $('algSelect').value,
+      cores: Math.min(8, Math.max(1, parseInt($('coresInput').value, 10) || 2)),
+      quantum: Math.max(1, parseInt($('quantumInput').value, 10) || 3),
+      priorityMode: $('prioModeSelect').value
+    };
+    try {
+      const res = await fetch(`${API_BASE}/api/simulate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Simulation failed');
+      lastSim = data;
+      renderSimulation(data);
+      showToast(`Simulation complete (${data.algorithm}, ${data.cores} cores)`, '#30D158');
+    } catch (err) {
+      showToast(err.message || 'Backend unreachable', '#FF453A');
+    }
+  }
+
+  function renderSimulation(data) {
+    const m = data.metrics;
+    animateNumber($('kpiTat'), m.avgTurnaround, 2);
+    animateNumber($('kpiWt'), m.avgWaiting, 2);
+    animateNumber($('kpiRt'), m.avgResponse, 2);
+    animateNumber($('kpiCpu'), m.cpuUtilization, 1, '%');
+    animateNumber($('kpiThru'), m.throughput, 3);
+    animateNumber($('kpiCs'), m.contextSwitches, 0);
+    animateNumber($('kpiIdle'), m.totalIdleTime, 0);
+    animateNumber($('kpiMake'), m.makespan, 0);
+
+    $('ganttSubtitle').textContent =
+      `${data.algorithm}${data.algorithm === 'Priority' ? ` (${data.priorityMode})` : ''} · ${data.cores} Cores · Makespan ${m.makespan} ticks`;
+
+    /* Render Core Cards */
+    const coreGrid = $('coreCardsGrid');
+    coreGrid.innerHTML = m.coreUtilization.map(c => `
+      <div class="core-card ${c.busyTime > 0 ? 'busy' : 'idle'}" id="coreCard-${c.core}">
+        <div class="core-card-top">
+          <span>CORE ${c.core}</span>
+          <span class="tabular" style="color:var(--cyan);">${c.utilization.toFixed(1)}%</span>
+        </div>
+        <div class="core-pid" id="corePid-${c.core}">${c.busyTime > 0 ? 'READY' : 'IDLE'}</div>
+        <div class="progress-track"><div class="progress-fill" style="width:${Math.min(100, c.utilization)}%"></div></div>
+        <div class="kpi-hint tabular" style="margin-top:7px;">Busy ${c.busyTime}t · Idle ${c.idleTime}t</div>
+      </div>
+    `).join('');
+
+    /* Render Multi-Core Gantt Chart */
+    const makespan = Math.max(1, m.makespan);
+    let html = `<div class="gantt-playhead" id="ganttPlayhead"></div>`;
+    for (let c = 0; c < data.cores; c++) {
+      const segs = data.gantt.filter(s => s.core === c);
+      html += `<div class="gantt-row"><div class="gantt-core-label">CORE ${c}</div><div class="gantt-track">`;
+      segs.forEach((s, idx) => {
+        const left = (s.start / makespan) * 100;
+        const width = ((s.end - s.start) / makespan) * 100;
+        const bg = s.idle ? '' : `background:${PROC_GRADIENTS[getPidIndex(s.pid)]};`;
+        const title = `Core ${c} · ${s.pid} · [${s.start} → ${s.end}] (${s.end - s.start} ticks)`;
+        html += `<div class="gantt-seg ${s.idle ? 'idle' : ''}" data-start="${s.start}" data-end="${s.end}" data-core="${c}" data-pid="${escapeHtml(s.pid)}" style="left:${left}%;width:${width}%;${bg}animation-delay:${idx * 35}ms" title="${escapeHtml(title)}">${s.idle ? 'IDLE' : escapeHtml(s.pid)}</div>`;
+      });
+      html += `</div></div>`;
+    }
+
+    /* Time Axis */
+    const step = makespan <= 20 ? 1 : Math.ceil(makespan / 15);
+    html += `<div class="gantt-axis"><div></div><div class="gantt-ticks">`;
+    for (let t = 0; t <= makespan; t += step) {
+      html += `<span class="gantt-tick-label" style="left:${(t / makespan) * 100}%">${t}</span>`;
+    }
+    if (makespan % step !== 0) {
+      html += `<span class="gantt-tick-label" style="left:100%">${makespan}</span>`;
+    }
+    html += `</div></div>`;
+    $('ganttContainer').innerHTML = html;
+    $('playTickBadge').textContent = `Tick: 0 / ${makespan}`;
+
+    /* Render Per-Process Results Table */
+    $('resultsTableBody').innerHTML = data.processes.map((p, idx) => {
+      const ci = getPidIndex(p.pid);
+      return `<tr style="animation-delay:${idx * 35}ms">
+        <td><span class="proc-swatch" style="background:${PROC_SOLID[ci]}"></span><strong>${escapeHtml(p.pid)}</strong></td>
+        <td>${p.arrival}</td><td>${p.burst}</td><td>${p.priority}</td>
+        <td>${p.firstStart}</td><td>${p.completion}</td>
+        <td><strong>${p.turnaround}</strong></td><td>${p.waiting}</td><td>${p.response}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  /* Animated Tick-by-Tick Gantt Replay */
+  function stopReplay() {
+    isPlaying = false;
+    if (playRaf) cancelAnimationFrame(playRaf);
+    playRaf = null;
+    $('playBtn').textContent = 'Play Replay';
+  }
+
+  function updateReplayVisuals(curTick) {
+    if (!lastSim) return;
+    const makespan = Math.max(1, lastSim.metrics.makespan);
+    const playhead = $('ganttPlayhead');
+    if (playhead) {
+      playhead.style.display = 'block';
+      const pct = Math.min(1, curTick / makespan);
+      playhead.style.left = `calc(94px + (100% - 94px) * ${pct})`;
+    }
+    const tickInt = Math.min(makespan - 1, Math.floor(curTick));
+    $('playTickBadge').textContent = `Tick: ${Math.min(makespan, curTick).toFixed(1)} / ${makespan}`;
+
+    document.querySelectorAll('.gantt-seg').forEach(seg => {
+      const st = Number(seg.dataset.start);
+      const en = Number(seg.dataset.end);
+      seg.classList.toggle('dimmed', curTick < st);
+      seg.classList.toggle('lit', curTick >= st && curTick < en && !seg.classList.contains('idle'));
+    });
+
+    if (lastSim.ticks && lastSim.ticks[tickInt]) {
+      const snap = lastSim.ticks[tickInt];
+      $('liveTickSub').textContent = `Live Tick ${snap.tick} · Ready Queue: ${snap.readyQueue.length ? snap.readyQueue.join(', ') : 'Empty'} · Completed: ${snap.completed}/${lastSim.processes.length}`;
+      snap.cores.forEach((pid, c) => {
+        const card = $(`coreCard-${c}`);
+        const label = $(`corePid-${c}`);
+        if (!card || !label) return;
+        const idle = (pid === 'IDLE');
+        card.classList.toggle('busy', !idle);
+        card.classList.toggle('idle', idle);
+        label.textContent = pid;
+        label.style.color = idle ? 'var(--text-muted)' : PROC_SOLID[getPidIndex(pid)];
+      });
+    }
+  }
+
+  $('playBtn').addEventListener('click', () => {
+    if (!lastSim || !lastSim.metrics.makespan) {
+      showToast('Run a simulation first to replay', '#FF9F0A');
+      return;
+    }
+    if (isPlaying) { stopReplay(); return; }
+    isPlaying = true;
+    $('playBtn').textContent = 'Pause';
+    const makespan = lastSim.metrics.makespan;
+    if (playProgress >= makespan) playProgress = 0;
+    let lastTs = performance.now();
+    const ticksPerSec = Math.max(2.2, Math.min(6, makespan / 5));
+
+    function frame(ts) {
+      if (!isPlaying) return;
+      const dt = (ts - lastTs) / 1000;
+      lastTs = ts;
+      playProgress += dt * ticksPerSec;
+      if (playProgress >= makespan) {
+        updateReplayVisuals(makespan);
+        stopReplay();
+        showToast('Gantt replay finished', '#64D2FF');
+        return;
+      }
+      updateReplayVisuals(playProgress);
+      playRaf = requestAnimationFrame(frame);
+    }
+    playRaf = requestAnimationFrame(frame);
+  });
+
+  $('resetPlayBtn').addEventListener('click', () => {
+    stopReplay();
+    playProgress = 0;
+    if (!lastSim) return;
+    const playhead = $('ganttPlayhead');
+    if (playhead) playhead.style.display = 'none';
+    document.querySelectorAll('.gantt-seg').forEach(s => s.classList.remove('dimmed', 'lit'));
+    $('playTickBadge').textContent = `Tick: 0 / ${lastSim.metrics.makespan}`;
+    $('liveTickSub').textContent = 'Replay reset. Press Play Replay to animate tick by tick.';
+  });
+
+  $('runSimBtn').addEventListener('click', runSimulation);
+
+  /* ================= TAB 2: LIVE HARDWARE MONITOR ================= */
+  function setGauge(arcId, percent) {
+    const circ = 2 * Math.PI * 56;
+    const clamped = Math.max(0, Math.min(100, percent));
+    $(arcId).style.strokeDashoffset = String(circ * (1 - clamped / 100));
+  }
+
+  function initLiveCharts() {
+    if (cpuChart && ramChart) return;
+    if (typeof Chart === 'undefined') {
+      const msg = '<div class="chart-fallback">Chart.js CDN could not be loaded (offline mode). Live circular gauges above remain fully active.</div>';
+      $('cpuChartWrap').innerHTML = msg;
+      $('ramChartWrap').innerHTML = msg;
+      return;
+    }
+    const commonOpts = (color) => ({
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: { duration: 350 },
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { grid: { color: 'rgba(255,255,255,0.06)' }, ticks: { color: 'rgba(255,255,255,0.45)', maxTicksLimit: 7 } },
+        y: { min: 0, max: 100, grid: { color: 'rgba(255,255,255,0.08)' }, ticks: { color: 'rgba(255,255,255,0.55)', callback: v => v + '%' } }
+      }
+    });
+
+    const cpuCtx = $('cpuLineChart').getContext('2d');
+    const cpuFill = cpuCtx.createLinearGradient(0, 0, 0, 240);
+    cpuFill.addColorStop(0, 'rgba(10,132,255,0.45)');
+    cpuFill.addColorStop(1, 'rgba(10,132,255,0.02)');
+    cpuChart = new Chart(cpuCtx, {
+      type: 'line',
+      data: { labels: timeLabels, datasets: [{ data: cpuHistory, borderColor: '#0A84FF', backgroundColor: cpuFill, fill: true, tension: 0.35, pointRadius: 0, borderWidth: 2.5 }] },
+      options: commonOpts('#0A84FF')
+    });
+
+    const ramCtx = $('ramLineChart').getContext('2d');
+    const ramFill = ramCtx.createLinearGradient(0, 0, 0, 240);
+    ramFill.addColorStop(0, 'rgba(191,90,242,0.45)');
+    ramFill.addColorStop(1, 'rgba(191,90,242,0.02)');
+    ramChart = new Chart(ramCtx, {
+      type: 'line',
+      data: { labels: timeLabels, datasets: [{ data: ramHistory, borderColor: '#BF5AF2', backgroundColor: ramFill, fill: true, tension: 0.35, pointRadius: 0, borderWidth: 2.5 }] },
+      options: commonOpts('#BF5AF2')
+    });
+  }
+
+  async function fetchHardware() {
+    try {
+      const res = await fetch(`${API_BASE}/api/hardware`);
+      if (!res.ok) throw new Error();
+      const hw = await res.json();
+      $('hwCpuModel').textContent = hw.cpuModel;
+      $('hwPhysCores').textContent = hw.physicalCores;
+      $('hwLogCores').textContent = hw.logicalProcessors;
+
+      const pinSel = $('pinCoreSelect');
+      pinSel.innerHTML = '<option value="-1">OS Default (Auto)</option>';
+      for (let c = 0; c < Math.min(32, hw.logicalProcessors || 4); c++) {
+        pinSel.innerHTML += `<option value="${c}">Core ${c}</option>`;
+      }
+      setBackendOnline(true);
+    } catch {
+      setBackendOnline(false);
+    }
+  }
+
+  function setBackendOnline(online) {
+    $('statusDot').classList.toggle('online', online);
+    $('statusText').textContent = online ? 'Backend connected' : 'Disconnected';
+  }
+
+  async function pollLiveMetrics() {
+    try {
+      const res = await fetch(`${API_BASE}/api/live`);
+      if (!res.ok) throw new Error();
+      const m = await res.json();
+      setBackendOnline(true);
+      animateNumber($('liveCpuText'), m.cpuPercent, 1, '%');
+      animateNumber($('liveRamText'), m.ramPercent, 1, '%');
+      setGauge('cpuGaugeArc', m.cpuPercent);
+      setGauge('ramGaugeArc', m.ramPercent);
+      $('ramDetailText').textContent = `${(m.ramUsedMB / 1024).toFixed(2)} GB / ${(m.ramTotalMB / 1024).toFixed(2)} GB used`;
+
+      cpuHistory.push(m.cpuPercent); cpuHistory.shift();
+      ramHistory.push(m.ramPercent); ramHistory.shift();
+      if (cpuChart) cpuChart.update('none');
+      if (ramChart) ramChart.update('none');
+    } catch {
+      setBackendOnline(false);
+    }
+  }
+
+  /* ================= TAB 3: PROCESS MONITOR ================= */
+  async function fetchProcesses() {
+    try {
+      const res = await fetch(`${API_BASE}/api/processes`);
+      if (!res.ok) throw new Error();
+      const data = await res.json();
+      osProcesses = data.processes || [];
+      $('procCountText').textContent = data.count;
+      renderOsProcesses();
+      setBackendOnline(true);
+    } catch {
+      setBackendOnline(false);
+    }
+  }
+
+  function renderOsProcesses() {
+    const q = ($('procSearch').value || '').trim().toLowerCase();
+    let list = osProcesses.filter(p => !q || p.name.toLowerCase().includes(q) || String(p.pid).includes(q));
+    list.sort((a, b) => {
+      const av = a[procSort.key], bv = b[procSort.key];
+      if (typeof av === 'string') return av.localeCompare(bv) * procSort.dir;
+      return (av - bv) * procSort.dir;
+    });
+
+    const nextPids = new Set(osProcesses.map(p => p.pid));
+    const isFirstLoad = knownPids.size === 0;
+    const tbody = $('osProcTableBody');
+    if (!list.length) {
+      tbody.innerHTML = '<tr><td colspan="3" style="text-align:center;color:var(--text-muted);padding:20px;">No matching processes found.</td></tr>';
+    } else {
+      tbody.innerHTML = list.slice(0, 150).map(p => {
+        const isNew = !isFirstLoad && !knownPids.has(p.pid);
+        return `<tr class="${isNew ? 'new-proc' : ''}">
+          <td><strong>${escapeHtml(p.name)}</strong></td>
+          <td>${p.pid}</td>
+          <td>${p.memoryMB.toFixed(2)} MB</td>
+        </tr>`;
+      }).join('');
+    }
+    knownPids = nextPids;
+  }
+
+  $('procSearch').addEventListener('input', renderOsProcesses);
+  $('refreshProcsBtn').addEventListener('click', () => { fetchProcesses(); showToast('Process list refreshed', '#64D2FF'); });
+  document.querySelectorAll('th.sortable').forEach(th => {
+    th.addEventListener('click', () => {
+      const k = th.dataset.sort;
+      if (procSort.key === k) procSort.dir *= -1;
+      else procSort = { key: k, dir: k === 'name' ? 1 : -1 };
+      renderOsProcesses();
+    });
+  });
+
+  window.launchApp = async function(app) {
+    const core = parseInt($('pinCoreSelect').value, 10);
+    try {
+      const res = await fetch(`${API_BASE}/api/launch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ app, core })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.message || data.error || 'Launch failed');
+      showToast(data.message || `${app} launched`, '#30D158');
+      setTimeout(fetchProcesses, 1200);
+    } catch (err) {
+      showToast(err.message || 'Launch error', '#FF453A');
+    }
+  };
+
+  /* ================= TAB 4: PERFORMANCE ANALYTICS ================= */
+  async function compareAll() {
+    if (!processList.length) {
+      showToast('Add processes in the Simulator tab first', '#FF453A');
+      return;
+    }
+    const payload = {
+      processes: processList,
+      cores: Math.min(8, Math.max(1, parseInt($('coresInput').value, 10) || 2)),
+      quantum: Math.max(1, parseInt($('quantumInput').value, 10) || 3),
+      priorityMode: $('prioModeSelect').value
+    };
+    try {
+      const res = await fetch(`${API_BASE}/api/compare`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Comparison failed');
+      renderComparison(data);
+      showToast('Compared all 5 scheduling algorithms', '#BF5AF2');
+    } catch (err) {
+      showToast(err.message || 'Backend unreachable', '#FF453A');
+    }
+  }
+
+  function renderComparison(data) {
+    const b = data.best;
+    $('compareTableBody').innerHTML = data.results.map((r, idx) => {
+      const m = r.metrics;
+      const a = r.algorithm;
+      return `<tr style="animation-delay:${idx * 40}ms">
+        <td><strong>${escapeHtml(a)}</strong></td>
+        <td class="${a === b.avgWaiting ? 'best-cell' : ''}">${m.avgWaiting.toFixed(2)}${a === b.avgWaiting ? ' ★' : ''}</td>
+        <td class="${a === b.avgTurnaround ? 'best-cell' : ''}">${m.avgTurnaround.toFixed(2)}${a === b.avgTurnaround ? ' ★' : ''}</td>
+        <td class="${a === b.avgResponse ? 'best-cell' : ''}">${m.avgResponse.toFixed(2)}${a === b.avgResponse ? ' ★' : ''}</td>
+        <td class="${a === b.cpuUtilization ? 'best-cell' : ''}">${m.cpuUtilization.toFixed(2)}%${a === b.cpuUtilization ? ' ★' : ''}</td>
+        <td>${m.throughput.toFixed(4)}</td>
+        <td class="${a === b.contextSwitches ? 'best-cell' : ''}">${m.contextSwitches}${a === b.contextSwitches ? ' ★' : ''}</td>
+        <td>${m.makespan}</td>
+      </tr>`;
+    }).join('');
+
+    if (typeof Chart === 'undefined') {
+      const msg = '<div class="chart-fallback">Chart.js CDN unavailable offline. Use the comparison table above or Download CSV Report.</div>';
+      $('cmpTimingWrap').innerHTML = msg;
+      $('cmpUtilWrap').innerHTML = msg;
+      return;
+    }
+
+    const labels = data.results.map(r => r.algorithm);
+    if (cmpTimingChart) cmpTimingChart.destroy();
+    if (cmpUtilChart) cmpUtilChart.destroy();
+
+    cmpTimingChart = new Chart($('cmpTimingChart').getContext('2d'), {
+      type: 'bar',
+      data: {
+        labels,
+        datasets: [
+          { label: 'Avg Waiting',    data: data.results.map(r => r.metrics.avgWaiting),    backgroundColor: 'rgba(10,132,255,0.82)', borderRadius: 8 },
+          { label: 'Avg Turnaround', data: data.results.map(r => r.metrics.avgTurnaround), backgroundColor: 'rgba(191,90,242,0.82)', borderRadius: 8 },
+          { label: 'Avg Response',   data: data.results.map(r => r.metrics.avgResponse),   backgroundColor: 'rgba(255,159,10,0.82)', borderRadius: 8 }
+        ]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { labels: { color: '#e5e7eb' } } },
+        scales: {
+          x: { ticks: { color: '#cbd5e1' }, grid: { display: false } },
+          y: { ticks: { color: '#94a3b8' }, grid: { color: 'rgba(255,255,255,0.08)' } }
+        }
+      }
+    });
+
+    cmpUtilChart = new Chart($('cmpUtilChart').getContext('2d'), {
+      type: 'bar',
+      data: {
+        labels,
+        datasets: [
+          { label: 'CPU Utilization (%)', data: data.results.map(r => r.metrics.cpuUtilization),  backgroundColor: 'rgba(48,209,88,0.82)',  borderRadius: 8 },
+          { label: 'Context Switches',    data: data.results.map(r => r.metrics.contextSwitches), backgroundColor: 'rgba(255,69,58,0.82)',  borderRadius: 8 }
+        ]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { labels: { color: '#e5e7eb' } } },
+        scales: {
+          x: { ticks: { color: '#cbd5e1' }, grid: { display: false } },
+          y: { ticks: { color: '#94a3b8' }, grid: { color: 'rgba(255,255,255,0.08)' } }
+        }
+      }
+    });
+  }
+
+  $('compareAllBtn').addEventListener('click', compareAll);
+  $('downloadCsvBtn').addEventListener('click', () => {
+    window.location.href = `${API_BASE}/api/report.csv`;
+    showToast('Report downloaded (cpu_scheduler_report.csv)', '#30D158');
+  });
+
+  /* Bootstrap on Load */
+  renderInputTable();
+  fetchHardware();
+  pollLiveMetrics();
+  setInterval(pollLiveMetrics, 1000);
+  setInterval(() => { if (activeTab === 'processes') fetchProcesses(); }, 4000);
+  window.addEventListener('load', () => {
+    initLiveCharts();
+    runSimulation();
+  });
+})();
+</script>
+</body>
+</html>

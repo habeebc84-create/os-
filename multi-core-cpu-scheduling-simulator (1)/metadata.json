@@ -1,0 +1,6 @@
+{
+  "name": "Multi-Core CPU Scheduling Simulator",
+  "description": "Multi-Core CPU Scheduling Simulator with Real-Time Hardware Monitoring, Performance Analytics, and complete Windows C11/MinGW source project.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,140 @@
+@import "tailwindcss";
+
+:root {
+  --blue: #0A84FF;
+  --purple: #BF5AF2;
+  --orange: #FF9F0A;
+  --green: #30D158;
+  --red: #FF453A;
+  --cyan: #64D2FF;
+}
+
+html {
+  scroll-behavior: smooth;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', sans-serif;
+}
+
+body {
+  margin: 0;
+  color: rgba(255, 255, 255, 0.96);
+  background: radial-gradient(circle at 15% 10%, #0d1638 0%, #070a19 48%, #130826 100%);
+  min-height: 100vh;
+  overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+.font-mono-tabular {
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Custom thin glass scrollbars */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: rgba(255, 255, 255, 0.03); }
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.22);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.38);
+  background-clip: content-box;
+}
+
+/* Liquid Glass Surfaces */
+.liquid-glass {
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.11) 0%, rgba(255, 255, 255, 0.05) 100%);
+  backdrop-filter: blur(24px) saturate(180%);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 24px;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.42), inset 0 1px 1px rgba(255, 255, 255, 0.28);
+}
+
+.liquid-card-hover {
+  transition: transform 0.28s cubic-bezier(0.16, 1, 0.3, 1),
+              box-shadow 0.28s cubic-bezier(0.16, 1, 0.3, 1),
+              border-color 0.28s ease;
+}
+.liquid-card-hover:hover {
+  transform: translateY(-2px);
+  border-color: rgba(255, 255, 255, 0.28);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5), 0 0 28px rgba(10, 132, 255, 0.14), inset 0 1px 1px rgba(255, 255, 255, 0.35);
+}
+
+.spring-btn {
+  transition: transform 0.24s cubic-bezier(0.34, 1.56, 0.64, 1),
+              background 0.2s ease,
+              box-shadow 0.2s ease;
+}
+.spring-btn:hover {
+  transform: scale(1.04);
+}
+.spring-btn:active {
+  transform: scale(0.98);
+}
+
+/* Ambient Orbs */
+@keyframes orbFloat1 {
+  from { transform: translate3d(0, 0, 0) scale(1); }
+  to   { transform: translate3d(55px, 45px, 0) scale(1.1); }
+}
+@keyframes orbFloat2 {
+  from { transform: translate3d(0, 0, 0) scale(1.05); }
+  to   { transform: translate3d(-65px, -45px, 0) scale(0.95); }
+}
+@keyframes orbFloat3 {
+  from { transform: translate3d(0, 0, 0) scale(1); }
+  to   { transform: translate3d(-50px, 60px, 0) scale(1.08); }
+}
+.orb-anim-1 { animation: orbFloat1 18s ease-in-out infinite alternate; }
+.orb-anim-2 { animation: orbFloat2 22s ease-in-out infinite alternate; }
+.orb-anim-3 { animation: orbFloat3 20s ease-in-out infinite alternate; }
+
+@keyframes coreSeqGlow {
+  0%, 100% { box-shadow: 0 0 0 rgba(255, 255, 255, 0); transform: scale(1); }
+  25%      { box-shadow: 0 0 26px currentColor; transform: scale(1.03); }
+  55%      { box-shadow: 0 0 0 rgba(255, 255, 255, 0); transform: scale(1); }
+}
+.core-seq-0 { animation: coreSeqGlow 3.2s ease-in-out infinite 0s; }
+.core-seq-1 { animation: coreSeqGlow 3.2s ease-in-out infinite 0.8s; }
+.core-seq-2 { animation: coreSeqGlow 3.2s ease-in-out infinite 1.6s; }
+.core-seq-3 { animation: coreSeqGlow 3.2s ease-in-out infinite 2.4s; }
+
+@keyframes coreBusyPulse {
+  0%, 100% { box-shadow: 0 0 14px rgba(10, 132, 255, 0.22); }
+  50%      { box-shadow: 0 0 30px rgba(10, 132, 255, 0.52); }
+}
+.core-busy-pulse { animation: coreBusyPulse 1.8s ease-in-out infinite; }
+
+@keyframes ganttGrow {
+  from { transform: scaleX(0); opacity: 0.4; }
+  to   { transform: scaleX(1); opacity: 1; }
+}
+.gantt-grow {
+  transform-origin: left center;
+  animation: ganttGrow 0.55s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.gantt-idle-stripe {
+  background: repeating-linear-gradient(
+    -45deg,
+    rgba(255, 255, 255, 0.08),
+    rgba(255, 255, 255, 0.08) 6px,
+    rgba(255, 255, 255, 0.03) 6px,
+    rgba(255, 255, 255, 0.03) 12px
+  );
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
