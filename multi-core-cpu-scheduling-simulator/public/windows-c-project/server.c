@@ -333,6 +333,10 @@ static void send_all(SOCKET sock, const char *buf, size_t len) {
 static void send_response(SOCKET sock, int code, const char *content_type,
                           const char *extra_headers, const char *body, size_t body_len) {
     char header[1024];
+    /* Private Network Access: lets an HTTPS page (e.g. the Vercel
+       deployment) call this localhost server. Without this header
+       browsers block the launch/health calls at the preflight,
+       so the site can only preview and never really launch. */
     int hlen = snprintf(header, sizeof(header),
         "HTTP/1.1 %d %s\r\n"
         "Content-Type: %s\r\n"
@@ -340,6 +344,7 @@ static void send_response(SOCKET sock, int code, const char *content_type,
         "Access-Control-Allow-Origin: *\r\n"
         "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
         "Access-Control-Allow-Headers: Content-Type\r\n"
+        "Access-Control-Allow-Private-Network: true\r\n"
         "Cache-Control: no-store\r\n"
         "Connection: close\r\n"
         "%s\r\n",
