@@ -1,7 +1,5 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": "vite",
-  "installCommand": "cd multi-core-cpu-scheduling-simulator && npm install",
-  "buildCommand": "cd multi-core-cpu-scheduling-simulator && npm run build",
-  "outputDirectory": "multi-core-cpu-scheduling-simulator/dist"
+  "rootDirectory": "multi-core-cpu-scheduling-simulator"
 }

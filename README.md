@@ -16,9 +16,31 @@ Then open http://localhost:3000.
 
 ## Deploy (Vercel)
 
-Import this repo as-is. The app lives in the `multi-core-cpu-scheduling-simulator/` subfolder, so the repo-root `vercel.json` points Vercel install, build and output steps into that folder - no dashboard Root Directory change is needed.
+The app lives in the `multi-core-cpu-scheduling-simulator/` subfolder, so Vercel must be told to build there. **Pick one** of these two setups - do not mix them:
 
-If the Vercel project Root Directory was set to the old upload folder name ending in ` (1)`, update it to `multi-core-cpu-scheduling-simulator` (or clear it, since `vercel.json` now handles it).
+**Option A - dashboard Root Directory (what the current project uses)**
+
+Set in Project Settings:
+
+| Setting | Value |
+| --- | --- |
+| Root Directory | `multi-core-cpu-scheduling-simulator` |
+| Framework Preset | Vite |
+| Install Command | `npm install` |
+| Build Command | `npm run build` |
+| Output Directory | `dist` |
+
+`multi-core-cpu-scheduling-simulator/vercel.json` backs this up for the same folder.
+
+**Option B - root directory at repo root**
+
+Clear the Root Directory so the app is built from the repo root. The repo-root `vercel.json` then sets `"rootDirectory": "multi-core-cpu-scheduling-simulator"`.
+
+> **Important:** Vercel only reads a `vercel.json` that sits **inside the configured Root Directory**. A root-level `vercel.json` is ignored when the Root Directory points at a subfolder, and vice versa. Running `npm install` at the repo root fails with `ENOENT: no package.json`, because there is no `package.json` there.
+
+### Deploying
+
+This project has automatic Git deploys turned off, so pushing to `main` does not publish anything. After a merge, deploy explicitly (for example `vercel --prod`, or Redeploy on the latest deployment). Do **not** press Redeploy on an old failed deployment - it rebuilds the old commit and reproduces its error.
 
 ## Hardware monitor
 
