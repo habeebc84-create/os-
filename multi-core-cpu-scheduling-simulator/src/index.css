@@ -160,40 +160,18 @@ textarea {
   );
 }
 
-/* Ambient motion, restored in soft light-theme form: drifting pastel orbs,
-   cores lighting up in sequence, and a gentle pulse on busy cores. The
-   prefers-reduced-motion block below still switches all of this off. */
-@keyframes orbFloat1 {
-  from { transform: translate3d(0, 0, 0) scale(1); }
-  to { transform: translate3d(55px, 45px, 0) scale(1.1); }
-}
-@keyframes orbFloat2 {
-  from { transform: translate3d(0, 0, 0) scale(1.05); }
-  to { transform: translate3d(-65px, -45px, 0) scale(0.95); }
-}
-@keyframes orbFloat3 {
-  from { transform: translate3d(0, 0, 0) scale(1); }
-  to { transform: translate3d(-50px, 60px, 0) scale(1.08); }
-}
-.orb-anim-1 { animation: orbFloat1 18s ease-in-out infinite alternate; }
-.orb-anim-2 { animation: orbFloat2 22s ease-in-out infinite alternate; }
-.orb-anim-3 { animation: orbFloat3 20s ease-in-out infinite alternate; }
-
-@keyframes coreSeqGlow {
-  0%, 100% { box-shadow: 0 0 0 rgba(10, 132, 255, 0); transform: scale(1); }
-  25% { box-shadow: 0 0 18px rgba(10, 132, 255, 0.28); transform: scale(1.03); }
-  55% { box-shadow: 0 0 0 rgba(10, 132, 255, 0); transform: scale(1); }
-}
-.core-seq-0 { animation: coreSeqGlow 3.2s ease-in-out infinite 0s; }
-.core-seq-1 { animation: coreSeqGlow 3.2s ease-in-out infinite 0.8s; }
-.core-seq-2 { animation: coreSeqGlow 3.2s ease-in-out infinite 1.6s; }
-.core-seq-3 { animation: coreSeqGlow 3.2s ease-in-out infinite 2.4s; }
+/* Ambient motion in soft light-theme form: a gentle pulse on busy cores and a
+   grow-in on Gantt bars. The prefers-reduced-motion block below switches all of
+   this off. */
 
 @keyframes coreBusyPulse {
-  0%, 100% { box-shadow: 0 0 10px rgba(10, 132, 255, 0.18); }
-  50% { box-shadow: 0 0 22px rgba(10, 132, 255, 0.38); }
+  0%, 100% { box-shadow: 0 0 0 0 rgba(10, 132, 255, 0); }
+  50% { box-shadow: 0 0 0 3px rgba(10, 132, 255, 0.1); }
 }
-.core-busy-pulse { animation: coreBusyPulse 1.8s ease-in-out infinite; }
+.core-busy-pulse {
+  animation: coreBusyPulse 2.4s ease-in-out infinite;
+  border-color: var(--blue) !important;
+}
 
 @media (prefers-reduced-motion: reduce) {
   *,

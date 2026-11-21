@@ -156,22 +156,7 @@ function LiveSparkChart({ data, stroke, gradientId }: { data: number[]; stroke: 
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<TabKey>('scheduler');
-  const [parallax, setParallax] = useState({ x: 0, y: 0 });
   const [toasts, setToasts] = useState<ToastItem[]>([]);
-
-  // Subtle mouse-move parallax for the ambient orbs (skipped when the user
-  // prefers reduced motion).
-  useEffect(() => {
-    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
-    const onMove = (e: MouseEvent) => {
-      setParallax({
-        x: (e.clientX / window.innerWidth - 0.5) * 2,
-        y: (e.clientY / window.innerHeight - 0.5) * 2,
-      });
-    };
-    window.addEventListener('mousemove', onMove, { passive: true });
-    return () => window.removeEventListener('mousemove', onMove);
-  }, []);
 
   // Scheduler state
   const [processes, setProcesses] = useState<ProcessInput[]>(SAMPLE_WORKLOAD);
@@ -253,6 +238,22 @@ export default function App() {
       timers.clear();
     };
   }, []);
+
+  // Escape dismisses the source viewer, and the page behind it must not scroll
+  // while the dialog is open.
+  useEffect(() => {
+    if (!codeDrawerOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setCodeDrawerOpen(false);
+    };
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      document.body.style.overflow = prevOverflow;
+    };
+  }, [codeDrawerOpen]);
 
   // The local C backend (simulator.exe) only listens on plain HTTP at
   // localhost:8080. Polling it every second from an HTTPS page would spam the
@@ -468,6 +469,35 @@ export default function App() {
     pushToast(`Added process ${pid}`, '#15803d');
   };
 
+  // Refreshes the process table from the real Win32 backend when it answers.
+  // The preview list is static, so the button reports what actually happened
+  // instead of always claiming a refresh succeeded.
+  const [procBusy, setProcBusy] = useState(false);
+  const handleRefreshProcesses = async () => {
+    setProcBusy(true);
+    try {
+      const res = await fetch('http://localhost:8080/api/processes', { signal: AbortSignal.timeout(1500) });
+      if (!res.ok) throw new Error(`Backend returned ${res.status}`);
+      const data = await res.json();
+      const list = Array.isArray(data) ? data : data?.processes;
+      if (!Array.isArray(list)) throw new Error('Unexpected response shape');
+      const cleaned: OSProcess[] = list
+        .map((p: { pid?: unknown; name?: unknown; memoryMB?: unknown }) => ({
+          pid: Number(p.pid),
+          name: String(p.name ?? 'unknown'),
+          memoryMB: Number(p.memoryMB ?? 0),
+        }))
+        .filter((p) => Number.isFinite(p.pid) && p.pid > 0);
+      if (!cleaned.length) throw new Error('No usable rows');
+      setOsProcs(cleaned);
+      pushToast(`Loaded ${cleaned.length} processes from the backend`, '#15803d');
+    } catch {
+      pushToast('Preview process list — start simulator.exe on this PC for live data', '#a16207');
+    } finally {
+      setProcBusy(false);
+    }
+  };
+
   const handleLoadSample = () => {
     setProcesses(SAMPLE_WORKLOAD);
     setCores(2);
@@ -570,33 +600,6 @@ export default function App() {
 
   return (
     <div className="relative min-h-screen bg-[var(--page)] text-[var(--ink)]">
-      {/* Ambient floating orbs with parallax — soft pastel washes on the light theme */}
-      <div className="fixed inset-0 z-0 overflow-hidden pointer-events-none">
-        <div
-          className="absolute -top-28 -left-20 w-[540px] h-[540px] rounded-full blur-[110px] opacity-30 orb-anim-1 transition-transform duration-500"
-          style={{
-            background: 'radial-gradient(circle, #93c5fd, transparent 70%)',
-            marginLeft: parallax.x * 18,
-            marginTop: parallax.y * 18,
-          }}
-        />
-        <div
-          className="absolute -bottom-36 left-[32%] w-[560px] h-[560px] rounded-full blur-[115px] opacity-30 orb-anim-2 transition-transform duration-500"
-          style={{
-            background: 'radial-gradient(circle, #d8b4fe, transparent 70%)',
-            marginLeft: parallax.x * 26,
-            marginTop: parallax.y * 26,
-          }}
-        />
-        <div
-          className="absolute top-[16%] -right-28 w-[480px] h-[480px] rounded-full blur-[110px] opacity-25 orb-anim-3 transition-transform duration-500"
-          style={{
-            background: 'radial-gradient(circle, #fdba74, transparent 70%)',
-            marginLeft: parallax.x * 14,
-            marginTop: parallax.y * 14,
-          }}
-        />
-      </div>
       {/* Main Responsive Shell */}
       <div className="relative mx-auto max-w-[1600px] p-4 lg:p-6 grid grid-cols-1 lg:grid-cols-[268px_minmax(0,1fr)] gap-6 min-h-screen">
         {/* Floating Glass Sidebar */}
@@ -698,20 +701,32 @@ export default function App() {
                   </p>
                 </div>
                 <div className="grid grid-cols-2 gap-3">
-                  {[
-                    { label: 'CORE 0', color: '#0d7490', cls: 'core-seq-0' },
-                    { label: 'CORE 1', color: '#0b63c5', cls: 'core-seq-1' },
-                    { label: 'CORE 2', color: '#a86200', cls: 'core-seq-2' },
-                    { label: 'CORE 3', color: '#8b3fd0', cls: 'core-seq-3' },
-                  ].map((c) => (
-                    <div
-                      key={c.label}
-                      className={`p-3 rounded-[var(--radius)] bg-[var(--surface-muted)] border border-[var(--border)] flex flex-col items-center gap-1.5 text-[11px] font-semibold tracking-wide text-[var(--ink-muted)] ${c.cls}`}
-                    >
-                      <Cpu className="w-6 h-6" style={{ color: c.color }} />
-                      <span>{c.label}</span>
+                  {Array.from({ length: Math.min(4, simResult.cores) }, (_, i) => {
+                    const core = simResult.metrics.coreUtilization[i];
+                    const busy = (core?.utilization ?? 0) > 0;
+                    return (
+                      <div
+                        key={i}
+                        className={`p-3 rounded-[var(--radius)] bg-[var(--surface-muted)] border border-[var(--border)] flex flex-col items-center gap-1.5 text-[11px] font-semibold tracking-wide ${
+                          busy ? 'text-[var(--ink)]' : 'text-[var(--ink-subtle)]'
+                        }`}
+                      >
+                        <Cpu
+                          className="w-6 h-6"
+                          style={{ color: busy ? 'var(--blue-ink)' : 'var(--border-strong)' }}
+                        />
+                        <span>CORE {i}</span>
+                        <span className="text-[10px] font-medium tabular-nums text-[var(--ink-subtle)]">
+                          {(core?.utilization ?? 0).toFixed(0)}%
+                        </span>
+                      </div>
+                    );
+                  })}
+                  {simResult.cores > 4 && (
+                    <div className="col-span-2 p-2 rounded-[var(--radius)] bg-[var(--surface-muted)] border border-[var(--border)] text-center text-[11px] font-semibold text-[var(--ink-subtle)]">
+                      +{simResult.cores - 4} more cores
                     </div>
-                  ))}
+                  )}
                 </div>
               </div>
 
@@ -1007,15 +1022,17 @@ export default function App() {
 
                 <div className="overflow-x-auto pb-2">
                   <div className="relative min-w-[660px]">
-                    {/* Moving Glowing Playhead */}
+                    {/* Playhead: 2px marker aligned to the row grid's track column */}
                     {playTick !== null && simResult.metrics.makespan > 0 && (
-                      <div
-                        className="absolute top-0 bottom-7 w-[3px] rounded-[var(--radius)] pointer-events-none z-20"
-                        style={{
-                          left: `calc(88px + (100% - 88px) * ${Math.min(1, playTick / simResult.metrics.makespan)})`,
-                          background: 'var(--ink)',
-                        }}
-                      />
+                      <div className="absolute top-0 bottom-6 left-[76px] right-0 pointer-events-none z-20">
+                        <div
+                          className="absolute top-0 bottom-0 w-0.5 -translate-x-px bg-[var(--ink)]"
+                          style={{
+                            left: `${Math.min(100, (playTick / simResult.metrics.makespan) * 100)}%`,
+                            opacity: 0.75,
+                          }}
+                        />
+                      </div>
                     )}
 
                     {Array.from({ length: simResult.cores }, (_, c) => {
@@ -1039,11 +1056,11 @@ export default function App() {
                                 <div
                                   key={`${c}-${s.start}-${s.end}`}
                                   title={`Core ${c} · ${s.pid} · [${s.start} → ${s.end}] (${s.end - s.start} ticks)`}
-                                  className={`absolute top-1 bottom-1 rounded-md flex items-center justify-center text-xs font-bold px-1 overflow-hidden whitespace-nowrap gantt-grow transition-all ${
+                                  className={`absolute top-1 bottom-1 rounded-md flex items-center justify-center text-xs font-bold px-1 overflow-hidden whitespace-nowrap gantt-grow transition-[opacity,filter] duration-200 ${
                                     s.idle
                                       ? 'gantt-idle-stripe text-[var(--ink-subtle)] border border-dashed border-[var(--border)]'
                                       : 'text-white shadow-sm'
-                                  } ${dimmed ? 'opacity-20 saturate-50' : ''} ${
+                                  } ${dimmed ? 'opacity-25 saturate-50' : ''} ${
                                     lit ? 'ring-2 ring-[var(--ink)] z-10' : ''
                                   }`}
                                   style={{
@@ -1361,11 +1378,12 @@ export default function App() {
                       />
                     </div>
                     <button
-                      onClick={() => pushToast('Process list refreshed', '#0e7490')}
-                      className="h-9 px-3.5 rounded-[var(--radius)] bg-[var(--surface-muted)] hover:bg-[var(--surface-sunken)] border border-[var(--border)] text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer spring-btn"
+                      onClick={handleRefreshProcesses}
+                      disabled={procBusy}
+                      className="h-9 px-3.5 rounded-[var(--radius)] bg-[var(--surface-muted)] hover:bg-[var(--surface-sunken)] disabled:opacity-60 disabled:cursor-progress border border-[var(--border)] text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer spring-btn"
                     >
-                      <RefreshCw className="w-3.5 h-3.5" />
-                      <span>Refresh</span>
+                      <RefreshCw className={`w-3.5 h-3.5 ${procBusy ? 'animate-spin' : ''}`} />
+                      <span>{procBusy ? 'Refreshing…' : 'Refresh'}</span>
                     </button>
                   </div>
                 </div>
@@ -1604,8 +1622,17 @@ export default function App() {
 
       {/* Windows C11 Project Source Modal */}
       {codeDrawerOpen && (
-        <div className="fixed inset-0 z-50 bg-slate-900/40 flex items-center justify-center p-4">
-          <div className="liquid-glass w-full max-w-6xl h-[86vh] flex flex-col overflow-hidden bg-white shadow-[var(--shadow-raised)]">
+        <div
+          className="fixed inset-0 z-50 bg-slate-900/40 flex items-center justify-center p-4"
+          onClick={() => setCodeDrawerOpen(false)}
+        >
+          <div
+            className="liquid-glass w-full max-w-6xl h-[86vh] flex flex-col overflow-hidden bg-white shadow-[var(--shadow-raised)]"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Windows C11 project bundle"
+            onClick={(e) => e.stopPropagation()}
+          >
             <div className="px-6 py-4 border-b border-[var(--border)] flex items-center justify-between gap-4">
               <div>
                 <h2 className="text-base font-bold">Windows C11 / MinGW Project Bundle (8 Files)</h2>
@@ -1615,6 +1642,7 @@ export default function App() {
               </div>
               <button
                 onClick={() => setCodeDrawerOpen(false)}
+                aria-label="Close source viewer"
                 className="w-9 h-9 rounded-lg border border-[var(--border)] bg-white hover:bg-[var(--surface-sunken)] text-[var(--ink-muted)] hover:text-[var(--ink)] flex items-center justify-center cursor-pointer shrink-0"
               >
                 <X className="w-4 h-4" />
