@@ -1,0 +1,14 @@
+{
+  "name": "multi-core-cpu-scheduling-simulator-workspace",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "dev": "npm --prefix multi-core-cpu-scheduling-simulator run dev",
+    "build": "npm --prefix multi-core-cpu-scheduling-simulator run build",
+    "preview": "npm --prefix multi-core-cpu-scheduling-simulator run preview",
+    "lint": "npm --prefix multi-core-cpu-scheduling-simulator run lint",
+    "typecheck": "npm --prefix multi-core-cpu-scheduling-simulator run typecheck",
+    "install:app": "npm --prefix multi-core-cpu-scheduling-simulator install",
+    "postinstall": "npm --prefix multi-core-cpu-scheduling-simulator install"
+  }
+}

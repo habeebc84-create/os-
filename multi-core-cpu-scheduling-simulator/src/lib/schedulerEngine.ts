@@ -1,6 +1,22 @@
 export type AlgorithmType = 'FCFS' | 'SJF' | 'SRTF' | 'Priority' | 'Round Robin';
 export type PriorityMode = 'preemptive' | 'non-preemptive';
 
+export const SIM_LIMITS = {
+  MAX_PROCS: 64,
+  MIN_CORES: 1,
+  MAX_CORES: 8,
+  MIN_QUANTUM: 1,
+  MAX_QUANTUM: 50,
+  MIN_ARRIVAL: 0,
+  MAX_ARRIVAL: 500,
+  MIN_BURST: 1,
+  MAX_BURST: 200,
+  MIN_PRIORITY: 1,
+  MAX_PRIORITY: 99,
+  PID_MAX_LEN: 15,
+  MAX_SIM_TICKS: 20000,
+} as const;
+
 export interface ProcessInput {
   pid: string;
   arrival: number;
@@ -60,6 +76,7 @@ export interface SimResult {
   gantt: GanttSegment[];
   ticks: TickSnapshot[];
   metrics: SimMetrics;
+  truncated?: boolean;
 }
 
 export interface CompareResponse {
@@ -81,6 +98,66 @@ export const SAMPLE_WORKLOAD: ProcessInput[] = [
   { pid: 'P5', arrival: 4, burst: 2, priority: 5 },
 ];
 
+export function clampInt(value: number, min: number, max: number, fallback: number): number {
+  if (!Number.isFinite(value)) return fallback;
+  return Math.min(max, Math.max(min, Math.floor(value)));
+}
+
+export function validateProcessInput(
+  candidate: { pid: string; arrival: number; burst: number; priority: number },
+  existing: ProcessInput[]
+): { ok: true; value: ProcessInput } | { ok: false; error: string } {
+  if (existing.length >= SIM_LIMITS.MAX_PROCS) {
+    return { ok: false, error: `Maximum of ${SIM_LIMITS.MAX_PROCS} processes reached.` };
+  }
+
+  const trimmedPid = candidate.pid.trim();
+  if (!trimmedPid) {
+    return { ok: false, error: 'Process ID (PID) is required.' };
+  }
+  if (trimmedPid.length > SIM_LIMITS.PID_MAX_LEN) {
+    return { ok: false, error: `PID must be ${SIM_LIMITS.PID_MAX_LEN} characters or fewer.` };
+  }
+  if (!/^[A-Za-z0-9_.-]+$/.test(trimmedPid)) {
+    return { ok: false, error: 'PID may only contain letters, numbers, "_", "-", or ".".' };
+  }
+  if (trimmedPid.toUpperCase() === 'IDLE') {
+    return { ok: false, error: '"IDLE" is reserved for idle core segments.' };
+  }
+  if (existing.some((p) => p.pid.toLowerCase() === trimmedPid.toLowerCase())) {
+    return { ok: false, error: `PID "${trimmedPid}" already exists in the queue.` };
+  }
+
+  if (!Number.isFinite(candidate.arrival) || candidate.arrival < SIM_LIMITS.MIN_ARRIVAL || candidate.arrival > SIM_LIMITS.MAX_ARRIVAL) {
+    return {
+      ok: false,
+      error: `Arrival time must be between ${SIM_LIMITS.MIN_ARRIVAL} and ${SIM_LIMITS.MAX_ARRIVAL}.`,
+    };
+  }
+  if (!Number.isFinite(candidate.burst) || candidate.burst < SIM_LIMITS.MIN_BURST || candidate.burst > SIM_LIMITS.MAX_BURST) {
+    return {
+      ok: false,
+      error: `Burst time must be between ${SIM_LIMITS.MIN_BURST} and ${SIM_LIMITS.MAX_BURST}.`,
+    };
+  }
+  if (!Number.isFinite(candidate.priority) || candidate.priority < SIM_LIMITS.MIN_PRIORITY || candidate.priority > SIM_LIMITS.MAX_PRIORITY) {
+    return {
+      ok: false,
+      error: `Priority must be between ${SIM_LIMITS.MIN_PRIORITY} and ${SIM_LIMITS.MAX_PRIORITY}.`,
+    };
+  }
+
+  return {
+    ok: true,
+    value: {
+      pid: trimmedPid,
+      arrival: Math.floor(candidate.arrival),
+      burst: Math.floor(candidate.burst),
+      priority: Math.floor(candidate.priority),
+    },
+  };
+}
+
 /**
  * Exact 1:1 TypeScript mirror of scheduler.c's multi-core tick-based engine
  * (identical ready queue ordering, preemption logic, RR requeueing, context switch
@@ -93,20 +170,24 @@ export function runMultiCoreSimulation(
   quantumRaw: number,
   priorityMode: PriorityMode
 ): SimResult {
-  const numCores = Math.min(8, Math.max(1, Math.floor(numCoresRaw) || 1));
-  const quantum = Math.max(1, Math.floor(quantumRaw) || 1);
+  const numCores = clampInt(numCoresRaw, SIM_LIMITS.MIN_CORES, SIM_LIMITS.MAX_CORES, 2);
+  const quantum = clampInt(quantumRaw, SIM_LIMITS.MIN_QUANTUM, SIM_LIMITS.MAX_QUANTUM, 3);
   const priorityPreemptive = priorityMode === 'preemptive';
 
-  const procs = inputs.map((p) => ({
-    pid: p.pid,
-    arrival: Math.max(0, Math.floor(p.arrival)),
-    burst: Math.max(1, Math.floor(p.burst)),
-    priority: Math.floor(p.priority),
-    remaining: Math.max(1, Math.floor(p.burst)),
-    firstStart: -1,
-    completion: 0,
-    state: 'NEW' as 'NEW' | 'READY' | 'RUNNING' | 'COMPLETED',
-  }));
+  const boundedInputs = inputs.slice(0, SIM_LIMITS.MAX_PROCS);
+  const procs = boundedInputs.map((p, idx) => {
+    const burst = clampInt(p.burst, SIM_LIMITS.MIN_BURST, SIM_LIMITS.MAX_BURST, 1);
+    return {
+      pid: p.pid.trim().slice(0, SIM_LIMITS.PID_MAX_LEN) || `P${idx + 1}`,
+      arrival: clampInt(p.arrival, SIM_LIMITS.MIN_ARRIVAL, SIM_LIMITS.MAX_ARRIVAL, 0),
+      burst,
+      priority: clampInt(p.priority, SIM_LIMITS.MIN_PRIORITY, SIM_LIMITS.MAX_PRIORITY, 1),
+      remaining: burst,
+      firstStart: -1,
+      completion: 0,
+      state: 'NEW' as 'NEW' | 'READY' | 'RUNNING' | 'COMPLETED',
+    };
+  });
 
   const cores = Array.from({ length: numCores }, () => ({
     assignedProc: -1,
@@ -124,6 +205,7 @@ export function runMultiCoreSimulation(
   let completedCount = 0;
   let contextSwitches = 0;
   let makespan = 0;
+  let truncated = false;
 
   const selectBestPos = (): number => {
     if (readyQueue.length === 0) return -1;
@@ -166,16 +248,7 @@ export function runMultiCoreSimulation(
     segments.push({ core: coreId, pid: label, idle: isIdle, start: t, end: t + 1 });
   };
 
-  // Safety bound. The previous hard stop at 10000 ticks silently truncated any
-  // workload whose total burst exceeded it: unfinished processes kept
-  // completion 0, which produced impossible metrics (negative waiting times,
-  // avgWaiting -20000) instead of an error. Size the bound from the actual
-  // workload so long-but-valid inputs always finish.
-  const totalBurst = procs.reduce((s, p) => s + p.burst, 0);
-  const maxArrival = procs.reduce((s, p) => Math.max(s, p.arrival), 0);
-  const tickLimit = Math.max(10000, maxArrival + totalBurst + 10);
-
-  for (let t = 0; t <= tickLimit; t++) {
+  for (let t = 0; t <= SIM_LIMITS.MAX_SIM_TICKS; t++) {
     // 1. Arrivals
     for (let i = 0; i < procs.length; i++) {
       if (procs[i].state === 'NEW' && procs[i].arrival <= t) {
@@ -191,9 +264,12 @@ export function runMultiCoreSimulation(
     }
     rrRequeue = [];
 
-    // 3. Done check
-    if (completedCount >= procs.length) {
+    // 3. Done check or safety cap
+    if (completedCount >= procs.length || t >= SIM_LIMITS.MAX_SIM_TICKS) {
       makespan = t;
+      if (completedCount < procs.length) {
+        truncated = true;
+      }
       break;
     }
 
@@ -297,29 +373,31 @@ export function runMultiCoreSimulation(
   }
 
   const processResults: ProcessResult[] = procs.map((p) => {
-    const turnaround = p.completion - p.arrival;
-    const waiting = turnaround - p.burst;
-    const response = p.firstStart - p.arrival;
+    const effectiveCompletion = p.state === 'COMPLETED' ? p.completion : Math.max(makespan, p.arrival);
+    const turnaround = Math.max(0, effectiveCompletion - p.arrival);
+    const executed = p.burst - Math.max(0, p.remaining);
+    const waiting = Math.max(0, turnaround - executed);
+    const response = p.firstStart >= 0 ? Math.max(0, p.firstStart - p.arrival) : 0;
     return {
       pid: p.pid,
       arrival: p.arrival,
       burst: p.burst,
       priority: p.priority,
       firstStart: p.firstStart,
-      completion: p.completion,
+      completion: p.state === 'COMPLETED' ? p.completion : makespan,
       turnaround,
       waiting,
       response,
     };
   });
 
-  const n = Math.max(1, processResults.length);
-  const avgTurnaround = processResults.reduce((s, p) => s + p.turnaround, 0) / n;
-  const avgWaiting = processResults.reduce((s, p) => s + p.waiting, 0) / n;
-  const avgResponse = processResults.reduce((s, p) => s + p.response, 0) / n;
+  const n = processResults.length;
+  const avgTurnaround = n > 0 ? processResults.reduce((s, p) => s + p.turnaround, 0) / n : 0;
+  const avgWaiting = n > 0 ? processResults.reduce((s, p) => s + p.waiting, 0) / n : 0;
+  const avgResponse = n > 0 ? processResults.reduce((s, p) => s + p.response, 0) / n : 0;
   const totalBusyTime = cores.reduce((s, c) => s + c.busyTime, 0);
   const totalIdleTime = cores.reduce((s, c) => s + c.idleTime, 0);
-  const throughput = makespan > 0 ? processResults.length / makespan : 0;
+  const throughput = makespan > 0 ? n / makespan : 0;
   const cpuUtilization = makespan > 0 ? (totalBusyTime / (numCores * makespan)) * 100 : 0;
 
   return {
@@ -330,6 +408,7 @@ export function runMultiCoreSimulation(
     processes: processResults,
     gantt: segments,
     ticks,
+    truncated,
     metrics: {
       avgTurnaround: Number(avgTurnaround.toFixed(2)),
       avgWaiting: Number(avgWaiting.toFixed(2)),
@@ -384,31 +463,100 @@ export function compareAllAlgorithms(
   };
 }
 
+/**
+ * RFC 4180 CSV cell escaping with spreadsheet formula-injection protection.
+ */
+function escapeCsvCell(value: string | number): string {
+  let str = String(value);
+  if (typeof value === 'string' && /^[=+\-@\t\r]/.test(str)) {
+    str = `'${str}`;
+  }
+  if (/[",\r\n]/.test(str)) {
+    return `"${str.replace(/"/g, '""')}"`;
+  }
+  return str;
+}
+
 export function buildCsvReport(lastSim: SimResult | null, lastCmp: CompareResponse | null): string {
   const lines: string[] = ['Multi-Core CPU Scheduling Simulator - Performance Report', ''];
-  if (lastSim) {
+  if (lastSim && lastSim.processes.length > 0) {
     lines.push(
-      `LAST SIMULATION,${lastSim.algorithm},Cores,${lastSim.cores},Quantum,${lastSim.quantum},PriorityMode,${lastSim.priorityMode}`
+      [
+        'LAST SIMULATION',
+        lastSim.algorithm,
+        'Cores',
+        lastSim.cores,
+        'Quantum',
+        lastSim.quantum,
+        'PriorityMode',
+        lastSim.priorityMode,
+      ]
+        .map(escapeCsvCell)
+        .join(',')
     );
     lines.push('PID,Arrival,Burst,Priority,FirstStart,Completion,Turnaround,Waiting,Response');
     for (const p of lastSim.processes) {
       lines.push(
-        `${p.pid},${p.arrival},${p.burst},${p.priority},${p.firstStart},${p.completion},${p.turnaround},${p.waiting},${p.response}`
+        [
+          p.pid,
+          p.arrival,
+          p.burst,
+          p.priority,
+          p.firstStart,
+          p.completion,
+          p.turnaround,
+          p.waiting,
+          p.response,
+        ]
+          .map(escapeCsvCell)
+          .join(',')
       );
     }
     const m = lastSim.metrics;
     lines.push(
-      `Summary,AvgTurnaround,${m.avgTurnaround.toFixed(2)},AvgWaiting,${m.avgWaiting.toFixed(2)},AvgResponse,${m.avgResponse.toFixed(2)},Throughput,${m.throughput.toFixed(4)},CPUUtilization%,${m.cpuUtilization.toFixed(2)},Makespan,${m.makespan},IdleTime,${m.totalIdleTime},ContextSwitches,${m.contextSwitches}`
+      [
+        'Summary',
+        'AvgTurnaround',
+        m.avgTurnaround.toFixed(2),
+        'AvgWaiting',
+        m.avgWaiting.toFixed(2),
+        'AvgResponse',
+        m.avgResponse.toFixed(2),
+        'Throughput',
+        m.throughput.toFixed(4),
+        'CPUUtilization%',
+        m.cpuUtilization.toFixed(2),
+        'Makespan',
+        m.makespan,
+        'IdleTime',
+        m.totalIdleTime,
+        'ContextSwitches',
+        m.contextSwitches,
+      ]
+        .map(escapeCsvCell)
+        .join(',')
     );
     lines.push('');
   }
-  if (lastCmp) {
+  if (lastCmp && lastCmp.results.length > 0) {
     lines.push('ALGORITHM COMPARISON');
     lines.push('Algorithm,AvgTurnaround,AvgWaiting,AvgResponse,Throughput,CPUUtilization%,Makespan,IdleTime,ContextSwitches');
     for (const r of lastCmp.results) {
       const m = r.metrics;
       lines.push(
-        `${r.algorithm},${m.avgTurnaround.toFixed(2)},${m.avgWaiting.toFixed(2)},${m.avgResponse.toFixed(2)},${m.throughput.toFixed(4)},${m.cpuUtilization.toFixed(2)},${m.makespan},${m.totalIdleTime},${m.contextSwitches}`
+        [
+          r.algorithm,
+          m.avgTurnaround.toFixed(2),
+          m.avgWaiting.toFixed(2),
+          m.avgResponse.toFixed(2),
+          m.throughput.toFixed(4),
+          m.cpuUtilization.toFixed(2),
+          m.makespan,
+          m.totalIdleTime,
+          m.contextSwitches,
+        ]
+          .map(escapeCsvCell)
+          .join(',')
       );
     }
   }

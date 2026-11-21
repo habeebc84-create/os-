@@ -38,6 +38,7 @@ static int g_has_last_sim = 0;
 static SimResult g_last_sim;
 static int g_has_last_cmp = 0;
 static CompareResult g_last_cmp;
+static _Thread_local const char *tl_allowed_origin = "http://localhost:8080";
 
 /* ======================== Dynamic StringBuilder ======================== */
 typedef struct {
@@ -60,21 +61,29 @@ static void sb_free(StrBuf *sb) {
     sb->cap = 0;
 }
 
-static void sb_reserve(StrBuf *sb, size_t extra) {
-    if (!sb->data) return;
-    if (sb->len + extra + 1 <= sb->cap) return;
+static int sb_reserve(StrBuf *sb, size_t extra) {
+    if (!sb->data) return 0;
+    if (extra > SIZE_MAX - sb->len - 1) return 0;
+    if (sb->len + extra + 1 <= sb->cap) return 1;
     size_t new_cap = sb->cap * 2;
-    while (new_cap < sb->len + extra + 1) new_cap *= 2;
+    while (new_cap < sb->len + extra + 1) {
+        if (new_cap > SIZE_MAX / 2) {
+            new_cap = sb->len + extra + 1;
+            break;
+        }
+        new_cap *= 2;
+    }
     char *p = (char *)realloc(sb->data, new_cap);
-    if (!p) return;
+    if (!p) return 0;
     sb->data = p;
     sb->cap = new_cap;
+    return 1;
 }
 
 static void sb_append(StrBuf *sb, const char *s) {
     if (!s || !sb->data) return;
     size_t n = strlen(s);
-    sb_reserve(sb, n);
+    if (!sb_reserve(sb, n)) return;
     memcpy(sb->data + sb->len, s, n + 1);
     sb->len += n;
 }
@@ -90,7 +99,10 @@ static void sb_appendf(StrBuf *sb, const char *fmt, ...) {
         va_end(copy);
         return;
     }
-    sb_reserve(sb, (size_t)needed);
+    if (!sb_reserve(sb, (size_t)needed)) {
+        va_end(copy);
+        return;
+    }
     vsnprintf(sb->data + sb->len, (size_t)needed + 1, fmt, copy);
     sb->len += (size_t)needed;
     va_end(copy);
@@ -116,6 +128,26 @@ static void sb_append_json_str(StrBuf *sb, const char *s) {
         }
     }
     sb_append(sb, "\"");
+}
+
+/* Append RFC 4180 CSV-escaped cell with spreadsheet formula-injection guard */
+static void sb_append_csv_str(StrBuf *sb, const char *s) {
+    if (!s) return;
+    int needs_quote = 0;
+    int formula_prefix = (*s == '=' || *s == '+' || *s == '-' || *s == '@' || *s == '\t' || *s == '\r');
+    for (const char *p = s; *p; p++) {
+        if (*p == ',' || *p == '"' || *p == '\n' || *p == '\r') {
+            needs_quote = 1;
+            break;
+        }
+    }
+    if (needs_quote) sb_append(sb, "\"");
+    if (formula_prefix) sb_append(sb, "'");
+    for (const char *p = s; *p; p++) {
+        if (*p == '"') sb_append(sb, "\"\"");
+        else sb_appendf(sb, "%c", *p);
+    }
+    if (needs_quote) sb_append(sb, "\"");
 }
 
 /* ======================== Hand-Written JSON Parser ======================== */
@@ -199,9 +231,19 @@ static int json_parse_processes(const char *body, ProcessInput *out, int max_pro
             const char *obj_start = p + 1;
             const char *obj_end = obj_start;
             int depth = 1;
+            int in_str = 0;
             while (obj_end < end && *obj_end && depth > 0) {
-                if (*obj_end == '{') depth++;
-                else if (*obj_end == '}') depth--;
+                if (in_str) {
+                    if (*obj_end == '\\' && (obj_end + 1) < end) {
+                        obj_end += 2;
+                        continue;
+                    }
+                    if (*obj_end == '"') in_str = 0;
+                } else {
+                    if (*obj_end == '"') in_str = 1;
+                    else if (*obj_end == '{') depth++;
+                    else if (*obj_end == '}') depth--;
+                }
                 obj_end++;
             }
             if (depth != 0) break;
@@ -317,8 +359,27 @@ static const char *status_text(int code) {
         case 403: return "Forbidden";
         case 404: return "Not Found";
         case 405: return "Method Not Allowed";
+        case 413: return "Payload Too Large";
         default:  return "Internal Server Error";
     }
+}
+
+static const char *resolve_allowed_origin(const char *origin) {
+    if (!origin || !origin[0]) return "http://localhost:8080";
+    static const char *const allowed[] = {
+        "http://localhost:8080",
+        "http://127.0.0.1:8080",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:5173",
+        "http://127.0.0.1:5173"
+    };
+    for (size_t i = 0; i < sizeof(allowed) / sizeof(allowed[0]); i++) {
+        if (_stricmp(origin, allowed[i]) == 0) {
+            return allowed[i];
+        }
+    }
+    return NULL;
 }
 
 static void send_all(SOCKET sock, const char *buf, size_t len) {
@@ -330,30 +391,44 @@ static void send_all(SOCKET sock, const char *buf, size_t len) {
     }
 }
 
-static void send_response(SOCKET sock, int code, const char *content_type,
-                          const char *extra_headers, const char *body, size_t body_len) {
-    char header[1024];
-    /* Private Network Access: lets an HTTPS page (e.g. the Vercel
-       deployment) call this localhost server. Without this header
-       browsers block the launch/health calls at the preflight,
-       so the site can only preview and never really launch. */
+static void send_response_cors(SOCKET sock, int code, const char *content_type,
+                               const char *allowed_origin, const char *extra_headers,
+                               const char *body, size_t body_len) {
+    char cors_hdr[256] = {0};
+    if (allowed_origin) {
+        snprintf(cors_hdr, sizeof(cors_hdr),
+                 "Access-Control-Allow-Origin: %s\r\n"
+                 "Vary: Origin\r\n",
+                 allowed_origin);
+    }
+    char header[1280];
     int hlen = snprintf(header, sizeof(header),
         "HTTP/1.1 %d %s\r\n"
         "Content-Type: %s\r\n"
         "Content-Length: %lu\r\n"
-        "Access-Control-Allow-Origin: *\r\n"
+        "%s"
         "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
         "Access-Control-Allow-Headers: Content-Type\r\n"
-        "Access-Control-Allow-Private-Network: true\r\n"
+        "X-Content-Type-Options: nosniff\r\n"
+        "Referrer-Policy: no-referrer\r\n"
         "Cache-Control: no-store\r\n"
         "Connection: close\r\n"
         "%s\r\n",
         code, status_text(code), content_type, (unsigned long)body_len,
+        cors_hdr,
         extra_headers ? extra_headers : "");
-    send_all(sock, header, (size_t)hlen);
+    if (hlen > 0) {
+        size_t safe_len = ((size_t)hlen < sizeof(header)) ? (size_t)hlen : sizeof(header) - 1;
+        send_all(sock, header, safe_len);
+    }
     if (body && body_len > 0) {
         send_all(sock, body, body_len);
     }
+}
+
+static void send_response(SOCKET sock, int code, const char *content_type,
+                          const char *extra_headers, const char *body, size_t body_len) {
+    send_response_cors(sock, code, content_type, tl_allowed_origin, extra_headers, body, body_len);
 }
 
 static void send_json_error(SOCKET sock, int code, const char *msg) {
@@ -618,8 +693,9 @@ static void handle_report_csv(SOCKET sock) {
         sb_append(&sb, "PID,Arrival,Burst,Priority,FirstStart,Completion,Turnaround,Waiting,Response\r\n");
         for (int i = 0; i < sim_copy->num_procs; i++) {
             const ProcessResult *p = &sim_copy->procs[i];
-            sb_appendf(&sb, "%s,%d,%d,%d,%d,%d,%d,%d,%d\r\n",
-                       p->pid, p->arrival, p->burst, p->priority,
+            sb_append_csv_str(&sb, p->pid);
+            sb_appendf(&sb, ",%d,%d,%d,%d,%d,%d,%d,%d\r\n",
+                       p->arrival, p->burst, p->priority,
                        p->first_start, p->completion, p->turnaround, p->waiting, p->response);
         }
         sb_appendf(&sb, "Summary,AvgTurnaround,%.2f,AvgWaiting,%.2f,AvgResponse,%.2f,Throughput,%.4f,CPUUtilization%%,%.2f,Makespan,%d,IdleTime,%d,ContextSwitches,%d\r\n\r\n",
@@ -666,6 +742,7 @@ static DWORD WINAPI client_thread_proc(LPVOID param) {
     size_t total = 0;
     char *header_end = NULL;
     size_t content_len = 0;
+    char origin_hdr[128] = {0};
 
     while (total < MAX_REQ_SIZE) {
         int n = recv(sock, req + total, (int)(MAX_REQ_SIZE - total), 0);
@@ -676,14 +753,27 @@ static DWORD WINAPI client_thread_proc(LPVOID param) {
         if (!header_end) {
             header_end = strstr(req, "\r\n\r\n");
             if (header_end) {
-                /* Case-insensitive search for Content-Length */
+                /* Case-insensitive header scan for Content-Length and Origin */
                 const char *p = req;
                 while (p < header_end) {
-                    if (_strnicmp(p, "Content-Length:", 15) == 0) {
-                        content_len = (size_t)strtoul(p + 15, NULL, 10);
-                        break;
-                    }
                     const char *nl = strstr(p, "\r\n");
+                    const char *line_end = nl ? nl : header_end;
+                    if (_strnicmp(p, "Content-Length:", 15) == 0) {
+                        unsigned long cl = strtoul(p + 15, NULL, 10);
+                        if (cl > MAX_REQ_SIZE) {
+                            send_json_error(sock, 413, "Request payload exceeds 256 KB limit.");
+                            free(req);
+                            closesocket(sock);
+                            return 0;
+                        }
+                        content_len = (size_t)cl;
+                    } else if (_strnicmp(p, "Origin:", 7) == 0) {
+                        const char *ov = skip_ws(p + 7);
+                        size_t olen = (size_t)(line_end - ov);
+                        if (olen >= sizeof(origin_hdr)) olen = sizeof(origin_hdr) - 1;
+                        memcpy(origin_hdr, ov, olen);
+                        origin_hdr[olen] = '\0';
+                    }
                     if (!nl) break;
                     p = nl + 2;
                 }
@@ -692,6 +782,12 @@ static DWORD WINAPI client_thread_proc(LPVOID param) {
 
         if (header_end) {
             size_t hdr_bytes = (size_t)((header_end + 4) - req);
+            if (hdr_bytes + content_len > MAX_REQ_SIZE) {
+                send_json_error(sock, 413, "Request payload exceeds 256 KB limit.");
+                free(req);
+                closesocket(sock);
+                return 0;
+            }
             if (total >= hdr_bytes + content_len) break;
         }
     }
@@ -701,6 +797,16 @@ static DWORD WINAPI client_thread_proc(LPVOID param) {
         closesocket(sock);
         return 0;
     }
+
+    const char *allowed_origin = resolve_allowed_origin(origin_hdr);
+    if (origin_hdr[0] && !allowed_origin) {
+        send_response_cors(sock, 403, "application/json; charset=utf-8", NULL, NULL,
+                           "{\"error\":\"Origin not permitted.\"}", 32);
+        free(req);
+        closesocket(sock);
+        return 0;
+    }
+    tl_allowed_origin = allowed_origin;
 
     char method[16] = {0};
     char path[256]  = {0};
@@ -718,7 +824,7 @@ static DWORD WINAPI client_thread_proc(LPVOID param) {
     const char *body = header_end + 4;
 
     if (strcmp(method, "OPTIONS") == 0) {
-        send_response(sock, 204, "text/plain", NULL, NULL, 0);
+        send_response_cors(sock, 204, "text/plain", allowed_origin, NULL, NULL, 0);
     } else if (strcmp(method, "GET") == 0 && (strcmp(path, "/") == 0 || strcmp(path, "/dashboard.html") == 0)) {
         handle_dashboard(sock);
     } else if (strcmp(method, "POST") == 0 && strcmp(path, "/api/simulate") == 0) {
@@ -774,7 +880,7 @@ int main(int argc, char **argv) {
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin_family      = AF_INET;
-    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     addr.sin_port        = htons(SERVER_PORT);
 
     if (bind(listen_sock, (struct sockaddr *)&addr, sizeof(addr)) == SOCKET_ERROR) {

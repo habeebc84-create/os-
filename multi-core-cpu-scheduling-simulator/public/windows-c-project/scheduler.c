@@ -460,23 +460,71 @@ int run_simulation(const ProcessInput *inputs, int num_procs, const SimConfig *c
 
     /* Initialize Windows synchronization primitives */
     InitializeCriticalSection(&ctx->lock);
+    int init_ok = 1;
     ctx->ev_clock_tick    = CreateEventA(NULL, FALSE, FALSE, NULL);
     ctx->ev_tick_complete = CreateEventA(NULL, FALSE, FALSE, NULL);
+    if (!ctx->ev_clock_tick || !ctx->ev_tick_complete) init_ok = 0;
+
     for (int c = 0; c < ctx->cfg.num_cores; c++) {
         ctx->ev_core_start[c] = CreateEventA(NULL, FALSE, FALSE, NULL);
         ctx->ev_core_done[c]  = CreateEventA(NULL, FALSE, FALSE, NULL);
+        if (!ctx->ev_core_start[c] || !ctx->ev_core_done[c]) init_ok = 0;
+    }
+
+    if (!init_ok) {
+        for (int c = 0; c < ctx->cfg.num_cores; c++) {
+            if (ctx->ev_core_start[c]) CloseHandle(ctx->ev_core_start[c]);
+            if (ctx->ev_core_done[c])  CloseHandle(ctx->ev_core_done[c]);
+        }
+        if (ctx->ev_clock_tick)    CloseHandle(ctx->ev_clock_tick);
+        if (ctx->ev_tick_complete) CloseHandle(ctx->ev_tick_complete);
+        DeleteCriticalSection(&ctx->lock);
+        free(ctx);
+        return -1;
     }
 
     /* Launch Core Worker Threads, Dispatcher Thread, and Clock Thread */
     HANDLE core_threads[MAX_CORES];
+    memset(core_threads, 0, sizeof(core_threads));
     CoreThreadArg core_args[MAX_CORES];
+    int created_cores = 0;
     for (int c = 0; c < ctx->cfg.num_cores; c++) {
         core_args[c].ctx = ctx;
         core_args[c].core_id = c;
         core_threads[c] = CreateThread(NULL, 0, core_thread_proc, &core_args[c], 0, NULL);
+        if (!core_threads[c]) {
+            init_ok = 0;
+            break;
+        }
+        created_cores++;
     }
-    HANDLE disp_thread  = CreateThread(NULL, 0, dispatcher_thread_proc, ctx, 0, NULL);
-    HANDLE clock_thread = CreateThread(NULL, 0, clock_thread_proc, ctx, 0, NULL);
+    HANDLE disp_thread  = init_ok ? CreateThread(NULL, 0, dispatcher_thread_proc, ctx, 0, NULL) : NULL;
+    HANDLE clock_thread = (init_ok && disp_thread) ? CreateThread(NULL, 0, clock_thread_proc, ctx, 0, NULL) : NULL;
+
+    if (!init_ok || !disp_thread || !clock_thread) {
+        EnterCriticalSection(&ctx->lock);
+        ctx->simulation_done = 1;
+        LeaveCriticalSection(&ctx->lock);
+        for (int c = 0; c < created_cores; c++) SetEvent(ctx->ev_core_start[c]);
+        if (disp_thread) {
+            SetEvent(ctx->ev_clock_tick);
+            WaitForSingleObject(disp_thread, 2000);
+            CloseHandle(disp_thread);
+        }
+        if (created_cores > 0) {
+            WaitForMultipleObjects((DWORD)created_cores, core_threads, TRUE, 2000);
+            for (int c = 0; c < created_cores; c++) CloseHandle(core_threads[c]);
+        }
+        for (int c = 0; c < ctx->cfg.num_cores; c++) {
+            CloseHandle(ctx->ev_core_start[c]);
+            CloseHandle(ctx->ev_core_done[c]);
+        }
+        CloseHandle(ctx->ev_clock_tick);
+        CloseHandle(ctx->ev_tick_complete);
+        DeleteCriticalSection(&ctx->lock);
+        free(ctx);
+        return -1;
+    }
 
     /* Wait for all threads to terminate cleanly */
     WaitForSingleObject(clock_thread, INFINITE);
@@ -510,9 +558,15 @@ int run_simulation(const ProcessInput *inputs, int num_procs, const SimConfig *c
     double sum_tat = 0.0, sum_wt = 0.0, sum_rt = 0.0;
     for (int i = 0; i < ctx->num_procs; i++) {
         out->procs[i] = ctx->procs[i];
-        out->procs[i].turnaround = out->procs[i].completion - out->procs[i].arrival;
-        out->procs[i].waiting    = out->procs[i].turnaround - out->procs[i].burst;
-        out->procs[i].response   = out->procs[i].first_start - out->procs[i].arrival;
+        int eff_comp = (out->procs[i].state == PROC_COMPLETED)
+            ? out->procs[i].completion
+            : (out->makespan > out->procs[i].arrival ? out->makespan : out->procs[i].arrival);
+        int executed = out->procs[i].burst - (out->procs[i].remaining > 0 ? out->procs[i].remaining : 0);
+        out->procs[i].completion = eff_comp;
+        out->procs[i].turnaround = (eff_comp >= out->procs[i].arrival) ? (eff_comp - out->procs[i].arrival) : 0;
+        out->procs[i].waiting    = (out->procs[i].turnaround >= executed) ? (out->procs[i].turnaround - executed) : 0;
+        out->procs[i].response   = (out->procs[i].first_start >= out->procs[i].arrival)
+            ? (out->procs[i].first_start - out->procs[i].arrival) : 0;
         sum_tat += out->procs[i].turnaround;
         sum_wt  += out->procs[i].waiting;
         sum_rt  += out->procs[i].response;

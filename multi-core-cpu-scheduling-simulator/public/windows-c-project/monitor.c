@@ -247,40 +247,44 @@ int monitor_launch_app(const char *app_key, int pin_core, LaunchResult *res) {
 
     char exe_path[MAX_PATH] = {0};
     char local_app[MAX_PATH] = {0};
+    char sys_dir[MAX_PATH] = {0};
     GetEnvironmentVariableA("LOCALAPPDATA", local_app, MAX_PATH);
+    if (GetSystemDirectoryA(sys_dir, MAX_PATH) == 0) {
+        snprintf(sys_dir, sizeof(sys_dir), "C:\\Windows\\System32");
+    }
 
     if (strcmp(lower, "notepad") == 0) {
-        strcpy(res->app_name, "Notepad");
-        strcpy(exe_path, "C:\\Windows\\System32\\notepad.exe");
+        snprintf(res->app_name, sizeof(res->app_name), "Notepad");
+        snprintf(exe_path, sizeof(exe_path), "%s\\notepad.exe", sys_dir);
     } else if (strcmp(lower, "calculator") == 0 || strcmp(lower, "calc") == 0) {
-        strcpy(res->app_name, "Calculator");
-        strcpy(exe_path, "C:\\Windows\\System32\\calc.exe");
+        snprintf(res->app_name, sizeof(res->app_name), "Calculator");
+        snprintf(exe_path, sizeof(exe_path), "%s\\calc.exe", sys_dir);
     } else if (strcmp(lower, "chrome") == 0) {
-        strcpy(res->app_name, "Google Chrome");
+        snprintf(res->app_name, sizeof(res->app_name), "Google Chrome");
         const char *c1 = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
         const char *c2 = "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe";
         char c3[MAX_PATH];
         snprintf(c3, sizeof(c3), "%s\\Google\\Chrome\\Application\\chrome.exe", local_app);
-        if (file_exists_win(c1)) strcpy(exe_path, c1);
-        else if (file_exists_win(c2)) strcpy(exe_path, c2);
-        else if (local_app[0] && file_exists_win(c3)) strcpy(exe_path, c3);
+        if (file_exists_win(c1)) snprintf(exe_path, sizeof(exe_path), "%s", c1);
+        else if (file_exists_win(c2)) snprintf(exe_path, sizeof(exe_path), "%s", c2);
+        else if (local_app[0] && file_exists_win(c3)) snprintf(exe_path, sizeof(exe_path), "%s", c3);
         else {
-            strcpy(res->message, "Google Chrome executable not found in standard Windows directories.");
+            snprintf(res->message, sizeof(res->message), "Google Chrome executable not found in standard Windows directories.");
             return 404;
         }
     } else if (strcmp(lower, "vscode") == 0 || strcmp(lower, "code") == 0) {
-        strcpy(res->app_name, "VS Code");
+        snprintf(res->app_name, sizeof(res->app_name), "VS Code");
         char v1[MAX_PATH];
         snprintf(v1, sizeof(v1), "%s\\Programs\\Microsoft VS Code\\Code.exe", local_app);
         const char *v2 = "C:\\Program Files\\Microsoft VS Code\\Code.exe";
-        if (local_app[0] && file_exists_win(v1)) strcpy(exe_path, v1);
-        else if (file_exists_win(v2)) strcpy(exe_path, v2);
+        if (local_app[0] && file_exists_win(v1)) snprintf(exe_path, sizeof(exe_path), "%s", v1);
+        else if (file_exists_win(v2)) snprintf(exe_path, sizeof(exe_path), "%s", v2);
         else {
-            strcpy(res->message, "VS Code executable not found in standard Windows directories.");
+            snprintf(res->message, sizeof(res->message), "VS Code executable not found in standard Windows directories.");
             return 404;
         }
     } else {
-        strcpy(res->message, "Application not allowed. Whitelist: chrome, vscode, notepad, calculator.");
+        snprintf(res->message, sizeof(res->message), "Application not allowed. Whitelist: chrome, vscode, notepad, calculator.");
         return 403;
     }
 

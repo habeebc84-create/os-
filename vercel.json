@@ -1,5 +1,28 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": "vite",
-  "rootDirectory": "multi-core-cpu-scheduling-simulator"
+  "installCommand": "npm --prefix multi-core-cpu-scheduling-simulator install",
+  "buildCommand": "npm --prefix multi-core-cpu-scheduling-simulator run build",
+  "outputDirectory": "multi-core-cpu-scheduling-simulator/dist",
+  "rewrites": [
+    {
+      "source": "/((?!windows-c-project/|assets/|manifest\\.webmanifest$).*)",
+      "destination": "/index.html"
+    }
+  ],
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        { "key": "X-Content-Type-Options", "value": "nosniff" },
+        { "key": "Referrer-Policy", "value": "strict-origin-when-cross-origin" }
+      ]
+    },
+    {
+      "source": "/windows-c-project/(.*)",
+      "headers": [
+        { "key": "Cache-Control", "value": "public, max-age=3600" }
+      ]
+    }
+  ]
 }

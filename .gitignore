@@ -1,4 +1,10 @@
 node_modules/
 dist/
 .vercel/
+.env
+.env.local
+.env.*.local
 *.log
+*.exe
+*.o
+.DS_Store
