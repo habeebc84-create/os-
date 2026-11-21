@@ -1,101 +1,57 @@
 @import "tailwindcss";
 
 /* ---------------------------------------------------------------------------
-   Design system.
+   Normal (light) UI theme.
 
-   A restrained light theme built on one accent (blue) plus a slate neutral
-   ramp. Colour carries meaning only where it matters - per-process identity in
-   the Gantt chart, and semantic success / warning / danger states - so the UI
-   reads as a normal tool rather than a dashboard of competing accents.
-
-   Everything here is tokens + a few shared component classes. App.tsx uses the
-   classes (btn, btn-primary, field, card, ...) and the CSS variables, so the
-   visual design lives in one file instead of being spread across utilities.
+   The app previously used a dark "liquid glass" look: near-black page
+   background, translucent white-on-dark panels, neon glows and drifting blur
+   orbs. Everything below is the same component tree on a light, flat,
+   standard-UI palette. Colors here are the canonical values; App.tsx refers to
+   them with CSS variables rather than repeating hex codes.
 --------------------------------------------------------------------------- */
 
 :root {
-  /* Neutral ramp - the backbone of the UI */
-  --page: #f5f7fa;
+  /* Semantic accents */
+  --blue: #0a84ff;
+  --purple: #bf5af2;
+  --orange: #ff9f0a;
+  --green: #30d158;
+  --red: #ff453a;
+  --cyan: #64d2ff;
+
+  /* Readable-on-light variants of the accents (meet WCAG AA on white) */
+  --blue-ink: #0b63c5;
+  --blue-hover: #0b63c5;
+  --purple-ink: #8b3fd0;
+  --orange-ink: #a86200;
+  --green-ink: #1a7f37;
+
+  /* Soft accent washes used for hover fills and "new" row highlights */
+  --green-soft: #e8f7ec;
+  --blue-soft: #eaf3fe;
+  --red-ink: #c0281c;
+  --cyan-ink: #0d7490;
+
+  /* Surfaces & text */
+  --page: #f4f6fa;
   --surface: #ffffff;
   --surface-muted: #f8fafc;
-  --surface-sunken: #f1f5f9;
+  --surface-sunken: #eef2f7;
   --border: #e2e8f0;
   --border-strong: #cbd5e1;
   --ink: #0f172a;
   --ink-muted: #475569;
   --ink-subtle: #64748b;
 
-  /* Single accent + its tints. Blue means "interactive / primary". */
-  --accent: #2563eb;
-  --accent-hover: #1d4ed8;
-  --accent-ink: #1d4ed8;
-  --accent-soft: #eff6ff;
-  --accent-border: #bfdbfe;
-
-  /* Semantic states. Each has a text-safe ink and a wash. */
-  --success: #15803d;
-  --success-wash: #f0fdf4;
-  --success-border: #bbf7d0;
-  --warning: #a16207;
-  --warning-wash: #fffbeb;
-  --warning-border: #fde68a;
-  --danger: #b91c1c;
-  --danger-wash: #fef2f2;
-  --danger-border: #fecaca;
-  --info: #0e7490;
-  --info-wash: #ecfeff;
-  --info-border: #a5f3fc;
-
-  /* Per-process chart palette: 8 hues, equal weight, all pass 4.5:1 for white
-     text on the fill and stay distinguishable side by side. */
-  --chart-1: #2563eb;
-  --chart-2: #7c3aed;
-  --chart-3: #c2410c;
-  --chart-4: #15803d;
-  --chart-5: #b91c1c;
-  --chart-6: #4338ca;
-  --chart-7: #0e7490;
-  --chart-8: #a16207;
-
-  /* Spacing / shape / elevation */
-  --radius: 10px;
-  --radius-sm: 6px;
-  --radius-lg: 14px;
-  --shadow-xs: 0 1px 2px rgba(15, 23, 42, 0.05);
-  --shadow: 0 1px 2px rgba(15, 23, 42, 0.05), 0 1px 3px rgba(15, 23, 42, 0.08);
-  --shadow-raised: 0 8px 24px rgba(15, 23, 42, 0.09), 0 2px 6px rgba(15, 23, 42, 0.05);
-  --ring: 0 0 0 3px rgba(37, 99, 235, 0.18);
-}
-
-/* Back-compat aliases. Older markup still says --blue / --cyan-ink and so on;
-   point them at the single accent and the semantic inks so nothing renders in
-   an off-system colour. */
-:root {
-  --blue: var(--accent);
-  --blue-ink: var(--accent-ink);
-  --blue-hover: var(--accent-hover);
-  --blue-soft: var(--accent-soft);
-  --purple: var(--chart-2);
-  --purple-ink: var(--chart-2);
-  --orange: var(--chart-3);
-  --orange-ink: var(--warning);
-  --green: var(--success);
-  --green-ink: var(--success);
-  --green-soft: var(--success-wash);
-  --red: var(--danger);
-  --red-ink: var(--danger);
-  --cyan: var(--info);
-  --cyan-ink: var(--info);
-}
-
-* {
-  border-color: var(--border);
+  --radius: 12px;
+  --shadow: 0 1px 2px rgba(15, 23, 42, 0.06), 0 1px 3px rgba(15, 23, 42, 0.1);
+  --shadow-raised: 0 4px 12px rgba(15, 23, 42, 0.1), 0 2px 4px rgba(15, 23, 42, 0.06);
 }
 
 html {
+  scroll-behavior: smooth;
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   background-color: var(--page);
-  -webkit-text-size-adjust: 100%;
 }
 
 body {
@@ -105,30 +61,19 @@ body {
   min-height: 100vh;
   overflow-x: hidden;
   -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  font-feature-settings: 'cv11', 'ss01';
 }
 
-h1, h2, h3, h4 {
-  letter-spacing: -0.011em;
-}
-
+/* Native-feeling form controls instead of fully custom dark inputs */
 select,
 input,
 button,
 textarea {
   font-family: inherit;
-  color: inherit;
 }
 
 :focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--blue);
   outline-offset: 2px;
-}
-
-::selection {
-  background: var(--accent-border);
-  color: var(--ink);
 }
 
 .font-mono-tabular {
@@ -140,7 +85,7 @@ textarea {
   font-variant-numeric: tabular-nums;
 }
 
-/* Thin, quiet scrollbars */
+/* Neutral scrollbars */
 ::-webkit-scrollbar {
   width: 10px;
   height: 10px;
@@ -151,7 +96,7 @@ textarea {
 ::-webkit-scrollbar-thumb {
   background: #cbd5e1;
   border-radius: 999px;
-  border: 3px solid transparent;
+  border: 2px solid transparent;
   background-clip: content-box;
 }
 ::-webkit-scrollbar-thumb:hover {
@@ -159,415 +104,96 @@ textarea {
   background-clip: content-box;
 }
 
-/* ---------------------------------------------------------------------------
-   Surfaces
---------------------------------------------------------------------------- */
-
-/* Base card. The old class name is kept so no markup churn was needed. */
+/* Cards: solid white with a hairline border and soft shadow.
+   Class names are retained so the component tree did not need rewriting. */
 .liquid-glass {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-xs);
-}
-
-/* Cards that respond to the pointer. Subtle: a hair of lift, no bounce. */
-.liquid-card-hover {
-  transition: border-color 0.16s ease, box-shadow 0.16s ease;
-}
-.liquid-card-hover:hover {
-  border-color: var(--border-strong);
+  border-radius: var(--radius);
   box-shadow: var(--shadow);
 }
 
-/* Header band used at the top of each card: consistent 1px rule, no noise. */
-.card-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 1rem;
-  flex-wrap: wrap;
-  margin-bottom: 1rem;
+.liquid-card-hover {
+  transition: box-shadow 0.18s ease, border-color 0.18s ease, transform 0.18s ease;
 }
-.card-title {
-  font-size: 0.9375rem;
-  font-weight: 650;
-  color: var(--ink);
-  line-height: 1.35;
-}
-.card-sub {
-  font-size: 0.75rem;
-  color: var(--ink-subtle);
-  margin-top: 0.125rem;
-  line-height: 1.45;
+.liquid-card-hover:hover {
+  transform: translateY(-2px);
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-raised);
 }
 
-/* ---------------------------------------------------------------------------
-   Buttons - one scale, one accent, predictable states
---------------------------------------------------------------------------- */
-
-.btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.4rem;
-  height: 2.125rem; /* 34px */
-  padding: 0 0.75rem;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius);
-  background: var(--surface);
-  color: var(--ink);
-  font-size: 0.75rem;
-  font-weight: 600;
-  line-height: 1;
-  white-space: nowrap;
-  cursor: pointer;
-  transition: background-color 0.14s ease, border-color 0.14s ease,
-    color 0.14s ease, box-shadow 0.14s ease;
-}
-.btn:hover {
-  background: var(--surface-muted);
-  border-color: #b6c2d2;
-}
-.btn:active {
-  background: var(--surface-sunken);
-}
-.btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.btn-lg {
-  height: 2.5rem; /* 40px */
-  padding: 0 1rem;
-  font-size: 0.8125rem;
-}
-
-.btn-sm {
-  height: 1.75rem; /* 28px */
-  padding: 0 0.5rem;
-  font-size: 0.6875rem;
-  gap: 0.3rem;
-}
-
-/* Primary: the only saturated fill in the interface. */
-.btn-primary {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #fff;
-  box-shadow: var(--shadow-xs);
-}
-.btn-primary:hover {
-  background: var(--accent-hover);
-  border-color: var(--accent-hover);
-}
-.btn-primary:active {
-  background: #1e40af;
-  border-color: #1e40af;
-}
-
-/* Quiet: no border, for icon-only and inline actions. */
-.btn-ghost {
-  border-color: transparent;
-  background: transparent;
-  color: var(--ink-muted);
-}
-.btn-ghost:hover {
-  background: var(--surface-sunken);
-  border-color: transparent;
-  color: var(--ink);
-}
-
-.btn-danger {
-  border-color: transparent;
-  background: transparent;
-  color: var(--danger);
-}
-.btn-danger:hover {
-  background: var(--danger-wash);
-  border-color: var(--danger-border);
-}
-
-/* Legacy hook - the spring bounce was part of the old theme. Keep the name so
-   existing markup is valid, but the motion now lives on .btn. */
+/* Buttons: small, predictable press feedback rather than a spring bounce */
 .spring-btn {
-  transition: background-color 0.14s ease, border-color 0.14s ease,
-    color 0.14s ease, box-shadow 0.14s ease;
+  transition: background-color 0.15s ease, border-color 0.15s ease,
+    box-shadow 0.15s ease, transform 0.15s ease;
 }
 .spring-btn:hover {
-  transform: none;
+  transform: scale(1.04);
 }
 .spring-btn:active {
-  transform: none;
+  transform: scale(0.98);
 }
 
-/* ---------------------------------------------------------------------------
-   Form controls
---------------------------------------------------------------------------- */
-
-.field {
-  width: 100%;
-  height: 2.25rem;
-  padding: 0 0.625rem;
-  background: var(--surface);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-sm);
-  font-size: 0.8125rem;
-  color: var(--ink);
-  outline: none;
-  transition: border-color 0.14s ease, box-shadow 0.14s ease;
-}
-.field::placeholder {
-  color: #94a3b8;
-}
-.field:hover {
-  border-color: #b6c2d2;
-}
-.field:focus {
-  border-color: var(--accent);
-  box-shadow: var(--ring);
-}
-.field-sm {
-  height: 1.875rem;
-  font-size: 0.75rem;
-}
-
-select.field {
-  cursor: pointer;
-  appearance: none;
-  padding-right: 1.75rem;
-  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 0.55rem center;
-}
-
-.field-label {
-  display: block;
-  font-size: 0.6875rem;
-  font-weight: 600;
-  letter-spacing: 0.01em;
-  color: var(--ink-muted);
-  margin-bottom: 0.3125rem;
-}
-
-/* ---------------------------------------------------------------------------
-   Data display
---------------------------------------------------------------------------- */
-
-/* Tables: no zebra stripes, one rule under each row, hover for tracking. */
-.data-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 0.8125rem;
-  font-variant-numeric: tabular-nums;
-}
-.data-table thead th {
-  text-align: left;
-  font-size: 0.6875rem;
-  font-weight: 600;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
-  color: var(--ink-subtle);
-  padding: 0 0.5rem 0.4rem;
-  border-bottom: 1px solid var(--border);
-  white-space: nowrap;
-}
-.data-table tbody td {
-  padding: 0.4375rem 0.5rem;
-  border-bottom: 1px solid var(--border);
-  color: var(--ink);
-}
-.data-table tbody tr {
-  transition: background-color 0.12s ease;
-}
-.data-table tbody tr:hover {
-  background: var(--surface-muted);
-}
-.data-table tbody tr:last-child td {
-  border-bottom: none;
-}
-
-/* Metric tile: label, big number, caption. Used for the KPI strip. */
-.metric {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 0.75rem 0.875rem;
-}
-.metric-label {
-  font-size: 0.6875rem;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  text-transform: uppercase;
-  color: var(--ink-subtle);
-}
-.metric-value {
-  font-size: 1.375rem;
-  font-weight: 700;
-  letter-spacing: -0.02em;
-  color: var(--ink);
-  line-height: 1.2;
-  margin-top: 0.125rem;
-  font-variant-numeric: tabular-nums;
-}
-.metric-hint {
-  font-size: 0.6875rem;
-  color: var(--ink-subtle);
-  margin-top: 0.125rem;
-}
-
-/* Status pill */
-.pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.375rem;
-  height: 1.625rem;
-  padding: 0 0.5rem;
-  border-radius: 999px;
-  font-size: 0.6875rem;
-  font-weight: 600;
-  border: 1px solid transparent;
-  white-space: nowrap;
-}
-.pill-ok {
-  background: var(--success-wash);
-  border-color: var(--success-border);
-  color: var(--success);
-}
-.pill-warn {
-  background: var(--warning-wash);
-  border-color: var(--warning-border);
-  color: var(--warning);
-}
-.pill-off {
-  background: var(--surface-muted);
-  border-color: var(--border);
-  color: var(--ink-muted);
-}
-
-/* Progress bar */
-.bar {
-  height: 6px;
-  border-radius: 999px;
-  background: var(--surface-sunken);
-  overflow: hidden;
-}
-.bar-fill {
-  height: 100%;
-  border-radius: 999px;
-  transition: width 0.45s ease;
-}
-
-/* ---------------------------------------------------------------------------
-   Navigation
---------------------------------------------------------------------------- */
-
-.nav-btn {
-  position: relative;
-  display: flex;
-  align-items: center;
-  gap: 0.625rem;
-  height: 2.25rem;
-  padding: 0 0.625rem;
-  border-radius: var(--radius);
-  font-size: 0.8125rem;
-  font-weight: 500;
-  color: var(--ink-muted);
-  cursor: pointer;
-  transition: background-color 0.14s ease, color 0.14s ease;
-  white-space: nowrap;
-  flex-shrink: 0;
-}
-.nav-btn:hover {
-  background: var(--surface-muted);
-  color: var(--ink);
-}
-.nav-btn-active {
-  background: var(--accent-soft);
-  color: var(--accent-ink);
-  font-weight: 600;
-}
-.nav-btn-active:hover {
-  background: var(--accent-soft);
-  color: var(--accent-ink);
-}
-/* 3px accent rule on the leading edge - the only decoration in the sidebar. */
-.nav-btn-active::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 0.5rem;
-  bottom: 0.5rem;
-  width: 3px;
-  border-radius: 999px;
-  background: var(--accent);
-}
-
-/* ---------------------------------------------------------------------------
-   Charts
---------------------------------------------------------------------------- */
-
-/* Gantt segment entrance: a short grow, no bounce. */
+/* Duration bars in the Gantt chart */
 .gantt-grow {
-  animation: ganttIn 0.22s ease-out both;
   transform-origin: left center;
+  animation: ganttGrow 0.55s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
-@keyframes ganttIn {
+@keyframes ganttGrow {
   from {
-    opacity: 0.35;
-    transform: scaleX(0.7);
+    transform: scaleX(0);
+    opacity: 0.4;
   }
   to {
-    opacity: 1;
     transform: scaleX(1);
+    opacity: 1;
   }
 }
 
 .gantt-idle-stripe {
   background: repeating-linear-gradient(
     -45deg,
-    #eef2f7,
-    #eef2f7 5px,
-    #f8fafc 5px,
-    #f8fafc 10px
+    #e2e8f0,
+    #e2e8f0 6px,
+    #f1f5f9 6px,
+    #f1f5f9 12px
   );
 }
 
-/* Gantt labels: keep them legible on narrow segments. */
-.gantt-label {
-  font-size: 0.6875rem;
-  font-weight: 700;
-  letter-spacing: 0.01em;
-  color: #fff;
-  text-shadow: 0 1px 1px rgba(15, 23, 42, 0.28);
+/* Ambient motion, restored in soft light-theme form: drifting pastel orbs,
+   cores lighting up in sequence, and a gentle pulse on busy cores. The
+   prefers-reduced-motion block below still switches all of this off. */
+@keyframes orbFloat1 {
+  from { transform: translate3d(0, 0, 0) scale(1); }
+  to { transform: translate3d(55px, 45px, 0) scale(1.1); }
 }
+@keyframes orbFloat2 {
+  from { transform: translate3d(0, 0, 0) scale(1.05); }
+  to { transform: translate3d(-65px, -45px, 0) scale(0.95); }
+}
+@keyframes orbFloat3 {
+  from { transform: translate3d(0, 0, 0) scale(1); }
+  to { transform: translate3d(-50px, 60px, 0) scale(1.08); }
+}
+.orb-anim-1 { animation: orbFloat1 18s ease-in-out infinite alternate; }
+.orb-anim-2 { animation: orbFloat2 22s ease-in-out infinite alternate; }
+.orb-anim-3 { animation: orbFloat3 20s ease-in-out infinite alternate; }
 
-/* Old animation hooks from the dark theme. Inert by design. */
-.orb-anim-1,
-.orb-anim-2,
-.orb-anim-3,
-.core-seq-0,
-.core-seq-1,
-.core-seq-2,
-.core-seq-3,
-.core-busy-pulse {
-  animation: none;
+@keyframes coreSeqGlow {
+  0%, 100% { box-shadow: 0 0 0 rgba(10, 132, 255, 0); transform: scale(1); }
+  25% { box-shadow: 0 0 18px rgba(10, 132, 255, 0.28); transform: scale(1.03); }
+  55% { box-shadow: 0 0 0 rgba(10, 132, 255, 0); transform: scale(1); }
 }
+.core-seq-0 { animation: coreSeqGlow 3.2s ease-in-out infinite 0s; }
+.core-seq-1 { animation: coreSeqGlow 3.2s ease-in-out infinite 0.8s; }
+.core-seq-2 { animation: coreSeqGlow 3.2s ease-in-out infinite 1.6s; }
+.core-seq-3 { animation: coreSeqGlow 3.2s ease-in-out infinite 2.4s; }
 
-/* Toast slide-in */
-.toast-in {
-  animation: toastIn 0.2s ease-out both;
+@keyframes coreBusyPulse {
+  0%, 100% { box-shadow: 0 0 10px rgba(10, 132, 255, 0.18); }
+  50% { box-shadow: 0 0 22px rgba(10, 132, 255, 0.38); }
 }
-@keyframes toastIn {
-  from {
-    opacity: 0;
-    transform: translateY(6px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
+.core-busy-pulse { animation: coreBusyPulse 1.8s ease-in-out infinite; }
 
 @media (prefers-reduced-motion: reduce) {
   *,
