@@ -328,6 +328,9 @@ export default function App() {
     checkHw();
 
     const timer = setInterval(async () => {
+      // stopReplay()/tab switches can unmount this effect between ticks; bail
+      // before issuing a request that will resolve into a dead closure.
+      if (!active) return;
       try {
         const res = await fetch('http://localhost:8080/api/live', { signal: AbortSignal.timeout(700) });
         if (res.ok && active) {
@@ -342,12 +345,13 @@ export default function App() {
           return;
         }
       } catch {
-        // Local C server not running on user's machine yet — run live preview waveform
+        // Local C server is not answering. On HTTPS that means it went away:
+        // hand back to the gentle 10s probe. Skipping this on a dev server
+        // (http://localhost) would leave a 1 Hz request storm running forever.
+        if (!canReachLocalBackend && active) setHttpsBackendUp(false);
       }
       if (!active) return;
       setBackendConnected(false);
-      // On HTTPS, if the backend went away, drop back to gentle probing.
-      if (!canReachLocalBackend) setHttpsBackendUp(false);
       setLiveCpu((prev) => {
         const next = Math.min(92, Math.max(8, prev + (Math.random() - 0.48) * 9));
         setCpuSeries((s) => [...s.slice(1), Number(next.toFixed(1))]);
