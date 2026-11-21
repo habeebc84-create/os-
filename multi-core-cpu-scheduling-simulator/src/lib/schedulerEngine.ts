@@ -166,7 +166,16 @@ export function runMultiCoreSimulation(
     segments.push({ core: coreId, pid: label, idle: isIdle, start: t, end: t + 1 });
   };
 
-  for (let t = 0; t <= 10000; t++) {
+  // Safety bound. The previous hard stop at 10000 ticks silently truncated any
+  // workload whose total burst exceeded it: unfinished processes kept
+  // completion 0, which produced impossible metrics (negative waiting times,
+  // avgWaiting -20000) instead of an error. Size the bound from the actual
+  // workload so long-but-valid inputs always finish.
+  const totalBurst = procs.reduce((s, p) => s + p.burst, 0);
+  const maxArrival = procs.reduce((s, p) => Math.max(s, p.arrival), 0);
+  const tickLimit = Math.max(10000, maxArrival + totalBurst + 10);
+
+  for (let t = 0; t <= tickLimit; t++) {
     // 1. Arrivals
     for (let i = 0; i < procs.length; i++) {
       if (procs[i].state === 'NEW' && procs[i].arrival <= t) {

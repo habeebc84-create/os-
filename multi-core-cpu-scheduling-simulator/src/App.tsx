@@ -56,6 +56,9 @@ const PROC_GRADIENTS = [
   'linear-gradient(135deg, #64D2FF, #06B6D4)',
   'linear-gradient(135deg, #FFD60A, #F59E0B)',
 ];
+// Hard ceiling on simulated cores, mirrored by runMultiCoreSimulation.
+const MAX_CORES = 8;
+
 const PROC_SOLID = ['#0A84FF', '#BF5AF2', '#FF9F0A', '#30D158', '#FF453A', '#5E5CE6', '#64D2FF', '#FFD60A'];
 
 const C_PROJECT_FILES = [
@@ -178,11 +181,13 @@ export default function App() {
 
   // Hardware & Process monitor preview (detects local C backend on :8080 if running)
   const [backendConnected, setBackendConnected] = useState(false);
-  const [hwInfo, setHwInfo] = useState({
+  const browserLogicalCpus = Math.max(1, navigator.hardwareConcurrency || 8);
+  const hwInfoDefault = {
     cpuModel: 'Interactive Preview (Run simulator.exe on Windows for real Win32 Registry)',
-    physicalCores: Math.max(4, Math.floor((navigator.hardwareConcurrency || 8) / 2)),
-    logicalProcessors: navigator.hardwareConcurrency || 8,
-  });
+    physicalCores: Math.max(1, Math.floor(browserLogicalCpus / 2)),
+    logicalProcessors: browserLogicalCpus,
+  };
+  const [hwInfo, setHwInfo] = useState(hwInfoDefault);
   const [liveCpu, setLiveCpu] = useState(24.5);
   const [liveRamPct, setLiveRamPct] = useState(56.2);
   const [liveRamUsedGB, setLiveRamUsedGB] = useState(8.99);
@@ -208,11 +213,28 @@ export default function App() {
   const [fileContents, setFileContents] = useState<Record<string, string>>({});
   const [copiedFile, setCopiedFile] = useState<string | null>(null);
 
+  // Toast dismiss timers are tracked so they can be cleared on unmount. Without
+  // this, every toast leaves a timer that fires setToasts on an unmounted
+  // component, and rapid actions stack unbounded pending timers.
+  const toastTimers = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
+
   const pushToast = (message: string, color = '#0A84FF') => {
     const id = Date.now() + Math.random();
     setToasts((prev) => [...prev, { id, message, color }]);
-    setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 3200);
+    const timer = setTimeout(() => {
+      setToasts((prev) => prev.filter((t) => t.id !== id));
+      toastTimers.current.delete(timer);
+    }, 3200);
+    toastTimers.current.add(timer);
   };
+
+  useEffect(() => {
+    const timers = toastTimers.current;
+    return () => {
+      timers.forEach(clearTimeout);
+      timers.clear();
+    };
+  }, []);
 
   // Subtle mouse-move parallax for ambient orbs
   useEffect(() => {
@@ -266,7 +288,14 @@ export default function App() {
         const res = await fetch('http://localhost:8080/api/hardware', { signal: AbortSignal.timeout(800) });
         if (res.ok && active) {
           const data = await res.json();
-          setHwInfo(data);
+          const logical = Math.floor(Number(data?.logicalProcessors));
+          const physical = Math.floor(Number(data?.physicalCores));
+          setHwInfo({
+            cpuModel: data?.cpuModel || 'Unknown processor',
+            physicalCores: Number.isFinite(physical) && physical > 0 ? physical : hwInfoDefault.physicalCores,
+            logicalProcessors:
+              Number.isFinite(logical) && logical > 0 ? logical : hwInfoDefault.logicalProcessors,
+          });
           setBackendConnected(true);
         }
       } catch {
@@ -316,10 +345,25 @@ export default function App() {
   // Load C source files on demand when drawer opens
   useEffect(() => {
     if (!codeDrawerOpen || fileContents[selectedFile]) return;
-    fetch(`/windows-c-project/${selectedFile}`)
-      .then((r) => r.text())
-      .then((text) => setFileContents((prev) => ({ ...prev, [selectedFile]: text })))
-      .catch(() => setFileContents((prev) => ({ ...prev, [selectedFile]: '// Could not load source file.' })));
+    let cancelled = false;
+    fetch(`/windows-c-project/${encodeURIComponent(selectedFile)}`)
+      .then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.text();
+      })
+      .then((text) => {
+        if (!cancelled) setFileContents((prev) => ({ ...prev, [selectedFile]: text }));
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setFileContents((prev) => ({
+          ...prev,
+          [selectedFile]: `// Could not load ${selectedFile} (file missing or network error).\n// The source lives in public/windows-c-project/ in the repository.`,
+        }));
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [codeDrawerOpen, selectedFile, fileContents]);
 
   const pidColorIndex = useMemo(() => {
@@ -335,9 +379,15 @@ export default function App() {
 
   const stopReplay = () => {
     setIsPlaying(false);
-    if (rafRef.current) cancelAnimationFrame(rafRef.current);
-    rafRef.current = null;
+    if (rafRef.current !== null) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
   };
+
+  // Cancel the replay animation if the component unmounts mid-play, otherwise
+  // the rAF loop keeps running against an unmounted tree.
+  useEffect(() => stopReplay, []);
 
   const handleRunSimulation = () => {
     if (!processes.length) {
@@ -442,8 +492,13 @@ export default function App() {
     const a = document.createElement('a');
     a.href = url;
     a.download = 'cpu_scheduler_report.csv';
+    a.rel = 'noopener';
+    // The anchor must be in the document for the download to fire in Firefox,
+    // and the object URL must outlive the click or the download is cancelled.
+    document.body.appendChild(a);
     a.click();
-    URL.revokeObjectURL(url);
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
     pushToast('Report downloaded (cpu_scheduler_report.csv)', '#30D158');
   };
 
@@ -498,6 +553,10 @@ export default function App() {
         return ((av as number) - (bv as number)) * procSort.dir;
       });
   }, [osProcs, procSearch, procSort]);
+
+  // Single source of truth for "how long is this run". Guarded so a degenerate
+  // simulation (zero makespan) never divides by zero in the Gantt layout.
+  const simMakespan = Math.max(1, simResult.metrics.makespan);
 
   const activeSnap = useMemo(() => {
     if (playTick === null || !simResult.ticks.length) return null;
@@ -707,9 +766,9 @@ export default function App() {
                       <input
                         type="number"
                         min={1}
-                        max={8}
+                        max={MAX_CORES}
                         value={cores}
-                        onChange={(e) => setCores(Math.min(8, Math.max(1, Number(e.target.value) || 1)))}
+                        onChange={(e) => setCores(Math.min(MAX_CORES, Math.max(1, Number(e.target.value) || 1)))}
                         className="w-full h-11 px-3.5 rounded-2xl bg-[#0a0e1e]/70 border border-white/18 text-sm text-white tabular-nums outline-none focus:border-[#0A84FF] focus:ring-2 focus:ring-[#0A84FF]/35"
                       />
                     </label>
@@ -992,7 +1051,7 @@ export default function App() {
 
                     {Array.from({ length: simResult.cores }, (_, c) => {
                       const segs = simResult.gantt.filter((s) => s.core === c);
-                      const makespan = Math.max(1, simResult.metrics.makespan);
+                      const makespan = simMakespan;
                       return (
                         <div key={c} className="grid grid-cols-[76px_1fr] items-center gap-3 mb-2.5">
                           <div className="text-xs font-bold text-white/65 text-right">CORE {c}</div>
@@ -1000,8 +1059,13 @@ export default function App() {
                             {segs.map((s, idx) => {
                               const left = (s.start / makespan) * 100;
                               const width = ((s.end - s.start) / makespan) * 100;
-                              const dimmed = playTick !== null && playTick < s.start;
-                              const lit = playTick !== null && playTick >= s.start && playTick < s.end && !s.idle;
+                              const playAt = playTick === null ? null : Math.min(playTick, simMakespan);
+                              const dimmed = playAt !== null && playAt < s.start;
+                              const lit =
+                                playAt !== null &&
+                                playAt >= s.start &&
+                                (playAt < s.end || (playAt === simMakespan && s.end === simMakespan)) &&
+                                !s.idle;
                               return (
                                 <div
                                   key={`${c}-${s.start}-${s.end}`}
@@ -1097,8 +1161,8 @@ export default function App() {
                       </tr>
                     </thead>
                     <tbody>
-                      {simResult.processes.map((p) => (
-                        <tr key={p.pid} className="border-b border-white/6 hover:bg-white/5">
+                      {simResult.processes.map((p, idx) => (
+                        <tr key={`${p.pid}-${idx}`} className="border-b border-white/6 hover:bg-white/5">
                           <td className="py-2.5 pr-3 font-bold flex items-center gap-2">
                             <span
                               className="w-2.5 h-2.5 rounded-full"
@@ -1262,7 +1326,7 @@ export default function App() {
                       className="h-9 px-3 rounded-xl bg-[#0a0e1e]/75 border border-white/18 text-xs text-white outline-none focus:border-[#0A84FF]"
                     >
                       <option value={-1}>OS Default (Auto)</option>
-                      {Array.from({ length: Math.min(16, hwInfo.logicalProcessors) }, (_, i) => (
+                      {Array.from({ length: Math.min(MAX_CORES, hwInfo.logicalProcessors) }, (_, i) => (
                         <option key={i} value={i}>
                           Core {i}
                         </option>
@@ -1605,11 +1669,21 @@ export default function App() {
                   <span className="text-xs font-bold font-mono-tabular text-[#64D2FF]">{selectedFile}</span>
                   <div className="flex items-center gap-2">
                     <button
-                      onClick={() => {
-                        navigator.clipboard.writeText(fileContents[selectedFile] || '');
-                        setCopiedFile(selectedFile);
-                        pushToast(`Copied ${selectedFile}`, '#30D158');
-                        setTimeout(() => setCopiedFile(null), 1800);
+                      onClick={async () => {
+                        const text = fileContents[selectedFile] || '';
+                        if (!text) {
+                          pushToast('Source not loaded yet', '#FF453A');
+                          return;
+                        }
+                        try {
+                          if (!navigator.clipboard) throw new Error('Clipboard unavailable (needs HTTPS)');
+                          await navigator.clipboard.writeText(text);
+                          setCopiedFile(selectedFile);
+                          pushToast(`Copied ${selectedFile}`, '#30D158');
+                          setTimeout(() => setCopiedFile(null), 1800);
+                        } catch (err) {
+                          pushToast((err as Error).message || 'Could not copy', '#FF453A');
+                        }
                       }}
                       className="h-8 px-3 rounded-full bg-white/10 hover:bg-white/20 text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer"
                     >
