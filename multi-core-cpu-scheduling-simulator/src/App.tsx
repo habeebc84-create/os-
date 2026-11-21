@@ -255,21 +255,26 @@ export default function App() {
   }, []);
 
   // The local C backend (simulator.exe) only listens on plain HTTP at
-  // localhost:8080. Polling it every second from an HTTPS page would spam the
-  // console (Private Network Access preflights), so polling stays off there —
-  // but a user-initiated Launch still tries once, and it can succeed because
-  // server.c answers preflights with Access-Control-Allow-Private-Network.
+  // localhost:8080. An HTTPS page can still reach it — localhost is a secure
+  // context, and server.c answers Private Network Access preflights — so the
+  // page probes the backend on HTTPS too. It just probes gently (once every
+  // 10s) instead of every second, so a missing backend does not spam the
+  // console; the moment simulator.exe answers, live polling switches on.
   // Easiest reliable setup is still running this page over http://localhost.
   const canReachLocalBackend = useMemo(() => {
     if (typeof window === 'undefined') return false;
     return window.location.protocol !== 'https:';
   }, []);
+  // HTTPS only: flips true once the gentle probe finds simulator.exe.
+  const [httpsBackendUp, setHttpsBackendUp] = useState(false);
 
   // Poll 1s live metrics (tries localhost:8080 C backend first; cleanly falls back to smooth browser preview telemetry)
   useEffect(() => {
     let active = true;
-    if (!canReachLocalBackend) {
-      // HTTPS page: the local HTTP backend is unreachable, stay on preview telemetry.
+    if (!canReachLocalBackend && !httpsBackendUp) {
+      // HTTPS page, backend not found yet: preview telemetry + a quiet
+      // probe every 10s. A successful probe flips httpsBackendUp, which
+      // re-runs this effect into live polling below.
       setBackendConnected(false);
       const previewTimer = setInterval(() => {
         setLiveCpu((prev) => {
@@ -284,9 +289,20 @@ export default function App() {
           return Number(next.toFixed(1));
         });
       }, 1000);
+      const probeBackend = async () => {
+        try {
+          const res = await fetch('http://localhost:8080/api/hardware', { signal: AbortSignal.timeout(1500) });
+          if (res.ok && active) setHttpsBackendUp(true);
+        } catch {
+          // simulator.exe not running yet — keep previewing, probe again soon.
+        }
+      };
+      probeBackend();
+      const probeTimer = setInterval(probeBackend, 10000);
       return () => {
         active = false;
         clearInterval(previewTimer);
+        clearInterval(probeTimer);
       };
     }
     const checkHw = async () => {
@@ -329,6 +345,8 @@ export default function App() {
       }
       if (!active) return;
       setBackendConnected(false);
+      // On HTTPS, if the backend went away, drop back to gentle probing.
+      if (!canReachLocalBackend) setHttpsBackendUp(false);
       setLiveCpu((prev) => {
         const next = Math.min(92, Math.max(8, prev + (Math.random() - 0.48) * 9));
         setCpuSeries((s) => [...s.slice(1), Number(next.toFixed(1))]);
@@ -346,7 +364,7 @@ export default function App() {
       active = false;
       clearInterval(timer);
     };
-  }, [canReachLocalBackend]);
+  }, [canReachLocalBackend, httpsBackendUp]);
 
   // Load C source files on demand when drawer opens
   useEffect(() => {
@@ -528,6 +546,10 @@ export default function App() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.message || 'Launch failed');
+      // A successful launch proves the backend is up — flip the status
+      // at once, even before the next probe runs.
+      setBackendConnected(true);
+      if (!canReachLocalBackend) setHttpsBackendUp(true);
       pushToast(data.message, '#15803d');
     } catch {
       pushToast(
