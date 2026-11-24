@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <limits.h>
 
 #include "monitor.h"
 
@@ -70,6 +71,12 @@ void monitor_cleanup(void) {
     DeleteCriticalSection(&g_cpu_lock);
 }
 
+static DWORD_PTR process_affinity_mask(void) {
+    DWORD_PTR process_mask = 0, system_mask = 0;
+    if (!GetProcessAffinityMask(GetCurrentProcess(), &process_mask, &system_mask)) return 0;
+    return process_mask & system_mask;
+}
+
 /* Read CPU brand string from Registry and core topology via Win32 API */
 void monitor_get_hardware(HardwareInfo *info) {
     memset(info, 0, sizeof(HardwareInfo));
@@ -119,6 +126,11 @@ void monitor_get_hardware(HardwareInfo *info) {
         GetSystemInfo(&si);
         info->logical_processors = (int)si.dwNumberOfProcessors;
         info->physical_cores = info->logical_processors;
+    }
+    /* Report the mask indices exposed by the agent's active Windows processor group. */
+    DWORD_PTR mask = process_affinity_mask();
+    for (int core = 0; mask; core++, mask >>= 1) {
+        if (mask & 1) info->affinity_cores[info->affinity_core_count++] = core;
     }
 }
 
@@ -288,42 +300,60 @@ int monitor_launch_app(const char *app_key, int pin_core, LaunchResult *res) {
         return 403;
     }
 
+    DWORD_PTR pin_mask = 0;
+    if (pin_core != -1) {
+        if (pin_core >= 0 && pin_core < (int)(sizeof(DWORD_PTR) * CHAR_BIT)) {
+            pin_mask = (DWORD_PTR)1 << pin_core;
+        }
+        if (!(process_affinity_mask() & pin_mask)) {
+            snprintf(res->message, sizeof(res->message),
+                     "Core %d is unavailable. Select an available core or OS Default.", pin_core);
+            return 400;
+        }
+    }
+
     STARTUPINFOA si;
     PROCESS_INFORMATION pi;
     memset(&si, 0, sizeof(si));
     memset(&pi, 0, sizeof(pi));
     si.cb = sizeof(si);
 
+    DWORD creation_flags = CREATE_NEW_PROCESS_GROUP | (pin_mask ? CREATE_SUSPENDED : 0);
     if (!CreateProcessA(exe_path, NULL, NULL, NULL, FALSE,
-                        CREATE_NEW_PROCESS_GROUP, NULL, NULL, &si, &pi)) {
+                        creation_flags, NULL, NULL, &si, &pi)) {
         snprintf(res->message, sizeof(res->message),
                  "CreateProcess failed for %s (Win32 error %lu).",
                  res->app_name, (unsigned long)GetLastError());
         return 500;
     }
 
+    if (pin_mask) {
+        if (SetProcessAffinityMask(pi.hProcess, pin_mask)) res->pinned_core = pin_core;
+        if (ResumeThread(pi.hThread) == (DWORD)-1) {
+            DWORD error = GetLastError();
+            TerminateProcess(pi.hProcess, 1);
+            CloseHandle(pi.hThread);
+            CloseHandle(pi.hProcess);
+            res->pinned_core = -1;
+            snprintf(res->message, sizeof(res->message),
+                     "Could not start %s (Win32 error %lu).", res->app_name, (unsigned long)error);
+            return 500;
+        }
+    }
+
     res->pid = (unsigned long)pi.dwProcessId;
     res->success = 1;
-
-    /* Optional bonus: pin launched process to a specific logical core */
-    HardwareInfo hw;
-    monitor_get_hardware(&hw);
-    if (pin_core >= 0 && pin_core < hw.logical_processors && pin_core < 64) {
-        DWORD_PTR mask = ((DWORD_PTR)1ULL << pin_core);
-        if (SetProcessAffinityMask(pi.hProcess, mask)) {
-            res->pinned_core = pin_core;
-            snprintf(res->message, sizeof(res->message),
-                     "%s launched (PID %lu) and pinned to Core %d.",
-                     res->app_name, res->pid, pin_core);
-        } else {
-            snprintf(res->message, sizeof(res->message),
-                     "%s launched (PID %lu), but affinity pinning was skipped by OS.",
-                     res->app_name, res->pid);
-        }
+    if (res->pinned_core >= 0) {
+        snprintf(res->message, sizeof(res->message),
+                 "%s launched (PID %lu) and pinned to Core %d.",
+                 res->app_name, res->pid, res->pinned_core);
+    } else if (pin_mask) {
+        snprintf(res->message, sizeof(res->message),
+                 "%s launched (PID %lu), but Windows could not pin it to Core %d.",
+                 res->app_name, res->pid, pin_core);
     } else {
         snprintf(res->message, sizeof(res->message),
-                 "%s launched successfully (PID %lu).",
-                 res->app_name, res->pid);
+                 "%s launched successfully (PID %lu).", res->app_name, res->pid);
     }
 
     CloseHandle(pi.hThread);

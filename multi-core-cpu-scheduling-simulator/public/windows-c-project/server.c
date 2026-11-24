@@ -15,12 +15,16 @@
 #include <string.h>
 #include <stdarg.h>
 #include <ctype.h>
+#include <errno.h>
 
 #include "scheduler.h"
 #include "monitor.h"
 
 #define SERVER_PORT     8080
 #define MAX_REQ_SIZE    (256 * 1024)
+
+static const char hosted_origin[] = "https://multi-core-cpu-scheduling-simulator.vercel.app";
+static int allow_hosted = 0;
 
 /*
  * ============================================================================
@@ -38,7 +42,7 @@ static int g_has_last_sim = 0;
 static SimResult g_last_sim;
 static int g_has_last_cmp = 0;
 static CompareResult g_last_cmp;
-static _Thread_local const char *tl_allowed_origin = "http://localhost:8080";
+static _Thread_local const char *tl_allowed_origin;
 
 /* ======================== Dynamic StringBuilder ======================== */
 typedef struct {
@@ -360,12 +364,14 @@ static const char *status_text(int code) {
         case 404: return "Not Found";
         case 405: return "Method Not Allowed";
         case 413: return "Payload Too Large";
+        case 415: return "Unsupported Media Type";
         default:  return "Internal Server Error";
     }
 }
 
 static const char *resolve_allowed_origin(const char *origin) {
-    if (!origin || !origin[0]) return "http://localhost:8080";
+    if (!origin) return NULL;
+    if (allow_hosted && strcmp(origin, hosted_origin) == 0) return hosted_origin;
     static const char *const allowed[] = {
         "http://localhost:8080",
         "http://127.0.0.1:8080",
@@ -584,8 +590,13 @@ static void handle_hardware(SOCKET sock) {
     sb_init(&sb, 512);
     sb_append(&sb, "{\"cpuModel\":");
     sb_append_json_str(&sb, hw.cpu_model);
-    sb_appendf(&sb, ",\"physicalCores\":%d,\"logicalProcessors\":%d}",
+    sb_appendf(&sb, ",\"physicalCores\":%d,\"logicalProcessors\":%d,\"affinityCores\":[",
                hw.physical_cores, hw.logical_processors);
+    for (int i = 0; i < hw.affinity_core_count; i++) {
+        if (i > 0) sb_append(&sb, ",");
+        sb_appendf(&sb, "%d", hw.affinity_cores[i]);
+    }
+    sb_append(&sb, "]}");
     send_response(sock, 200, "application/json; charset=utf-8", NULL, sb.data, sb.len);
     sb_free(&sb);
 }
@@ -634,7 +645,19 @@ static void handle_launch(SOCKET sock, const char *body) {
         send_json_error(sock, 400, "Missing 'app' field in JSON body.");
         return;
     }
-    int pin_core = json_get_int(body, end, "core", -1);
+    int pin_core = -1;
+    const char *core_value = json_find_key(body, end, "core");
+    if (core_value) {
+        char *next;
+        errno = 0;
+        long parsed_core = strtol(core_value, &next, 10);
+        if (next == core_value || errno == ERANGE || parsed_core < -1 || parsed_core >= MAX_AFFINITY_CORES ||
+            (*skip_ws(next) != ',' && *skip_ws(next) != '}')) {
+            send_json_error(sock, 400, "Core must be -1 (OS Default) or a supported logical CPU index.");
+            return;
+        }
+        pin_core = (int)parsed_core;
+    }
 
     LaunchResult lr;
     int http_code = monitor_launch_app(app, pin_core, &lr);
@@ -726,6 +749,70 @@ static void handle_report_csv(SOCKET sock) {
 }
 
 /* ======================== Per-Client HTTP Thread ======================== */
+typedef struct {
+    const char *host;
+    const char *origin;
+    const char *content_type;
+    const char *private_network;
+    size_t content_length;
+} RequestHeaders;
+
+static const char *trim_header_value(char *value) {
+    while (*value == ' ' || *value == '\t') value++;
+    char *end = value + strlen(value);
+    while (end > value && (end[-1] == ' ' || end[-1] == '\t')) *--end = '\0';
+    return value;
+}
+
+static int parse_request_headers(char *request, char *header_end, RequestHeaders *headers) {
+    char *line_end = strstr(request, "\r\n");
+    *line_end = '\0';
+    int has_content_length = 0;
+
+    while (line_end < header_end) {
+        char *line = line_end + 2;
+        line_end = strstr(line, "\r\n");
+        *line_end = '\0';
+        char *separator = strchr(line, ':');
+        if (!separator || separator == line) return 400;
+        *separator = '\0';
+        const char *value = trim_header_value(separator + 1);
+
+        const char **field = NULL;
+        if (_stricmp(line, "Host") == 0) field = &headers->host;
+        else if (_stricmp(line, "Origin") == 0) field = &headers->origin;
+        else if (_stricmp(line, "Content-Type") == 0) field = &headers->content_type;
+        else if (_stricmp(line, "Access-Control-Request-Private-Network") == 0) field = &headers->private_network;
+
+        if (field) {
+            if (*field || !*value) return 400;
+            *field = value;
+        } else if (_stricmp(line, "Transfer-Encoding") == 0) {
+            return 400;
+        } else if (_stricmp(line, "Content-Length") == 0) {
+            if (has_content_length || !isdigit((unsigned char)*value)) return 400;
+            char *next;
+            unsigned long length = strtoul(value, &next, 10);
+            if (*next) return 400;
+            if (length > MAX_REQ_SIZE) return 413;
+            headers->content_length = (size_t)length;
+            has_content_length = 1;
+        }
+    }
+    return 0;
+}
+
+static int is_loopback_host(const char *host) {
+    return host && (_stricmp(host, "localhost:8080") == 0 || strcmp(host, "127.0.0.1:8080") == 0);
+}
+
+static int is_json_content_type(const char *content_type) {
+    static const char json[] = "application/json";
+    if (!content_type || _strnicmp(content_type, json, sizeof(json) - 1) != 0) return 0;
+    const char *suffix = skip_ws(content_type + sizeof(json) - 1);
+    return *suffix == '\0' || *suffix == ';';
+}
+
 static DWORD WINAPI client_thread_proc(LPVOID param) {
     SOCKET sock = (SOCKET)(uintptr_t)param;
 
@@ -733,98 +820,70 @@ static DWORD WINAPI client_thread_proc(LPVOID param) {
     DWORD timeout_ms = 5000;
     setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char *)&timeout_ms, sizeof(timeout_ms));
 
-    char *req = (char *)malloc(MAX_REQ_SIZE + 1);
-    if (!req) {
+    char *request = (char *)malloc(MAX_REQ_SIZE + 1);
+    if (!request) {
         closesocket(sock);
         return 0;
     }
 
     size_t total = 0;
-    char *header_end = NULL;
-    size_t content_len = 0;
-    char origin_hdr[128] = {0};
-
+    size_t request_size = 0;
+    char *body = NULL;
+    RequestHeaders headers = {0};
     while (total < MAX_REQ_SIZE) {
-        int n = recv(sock, req + total, (int)(MAX_REQ_SIZE - total), 0);
+        int n = recv(sock, request + total, (int)(MAX_REQ_SIZE - total), 0);
         if (n <= 0) break;
         total += (size_t)n;
-        req[total] = '\0';
+        request[total] = '\0';
 
-        if (!header_end) {
-            header_end = strstr(req, "\r\n\r\n");
-            if (header_end) {
-                /* Case-insensitive header scan for Content-Length and Origin */
-                const char *p = req;
-                while (p < header_end) {
-                    const char *nl = strstr(p, "\r\n");
-                    const char *line_end = nl ? nl : header_end;
-                    if (_strnicmp(p, "Content-Length:", 15) == 0) {
-                        unsigned long cl = strtoul(p + 15, NULL, 10);
-                        if (cl > MAX_REQ_SIZE) {
-                            send_json_error(sock, 413, "Request payload exceeds 256 KB limit.");
-                            free(req);
-                            closesocket(sock);
-                            return 0;
-                        }
-                        content_len = (size_t)cl;
-                    } else if (_strnicmp(p, "Origin:", 7) == 0) {
-                        const char *ov = skip_ws(p + 7);
-                        size_t olen = (size_t)(line_end - ov);
-                        if (olen >= sizeof(origin_hdr)) olen = sizeof(origin_hdr) - 1;
-                        memcpy(origin_hdr, ov, olen);
-                        origin_hdr[olen] = '\0';
-                    }
-                    if (!nl) break;
-                    p = nl + 2;
-                }
+        if (!body) {
+            char *header_end = strstr(request, "\r\n\r\n");
+            if (!header_end) continue;
+            int error = parse_request_headers(request, header_end, &headers);
+            if (error) {
+                send_json_error(sock, error, error == 413 ? "Request payload exceeds 256 KB limit." : "Malformed HTTP headers.");
+                goto cleanup;
             }
-        }
-
-        if (header_end) {
-            size_t hdr_bytes = (size_t)((header_end + 4) - req);
-            if (hdr_bytes + content_len > MAX_REQ_SIZE) {
+            if (!is_loopback_host(headers.host)) {
+                send_json_error(sock, 403, "Use the agent's loopback address.");
+                goto cleanup;
+            }
+            tl_allowed_origin = resolve_allowed_origin(headers.origin);
+            if (headers.origin && !tl_allowed_origin) {
+                send_json_error(sock, 403, "Origin not permitted.");
+                goto cleanup;
+            }
+            body = header_end + 4;
+            request_size = (size_t)(body - request) + headers.content_length;
+            if (request_size > MAX_REQ_SIZE) {
                 send_json_error(sock, 413, "Request payload exceeds 256 KB limit.");
-                free(req);
-                closesocket(sock);
-                return 0;
+                goto cleanup;
             }
-            if (total >= hdr_bytes + content_len) break;
         }
+        if (total >= request_size) break;
     }
 
-    if (total == 0 || !header_end) {
-        free(req);
-        closesocket(sock);
-        return 0;
-    }
-
-    const char *allowed_origin = resolve_allowed_origin(origin_hdr);
-    if (origin_hdr[0] && !allowed_origin) {
-        send_response_cors(sock, 403, "application/json; charset=utf-8", NULL, NULL,
-                           "{\"error\":\"Origin not permitted.\"}", 32);
-        free(req);
-        closesocket(sock);
-        return 0;
-    }
-    tl_allowed_origin = allowed_origin;
+    if (!body || total < request_size) goto cleanup;
+    request[request_size] = '\0';
 
     char method[16] = {0};
     char path[256]  = {0};
-    if (sscanf(req, "%15s %255s", method, path) != 2) {
+    if (sscanf(request, "%15s %255s", method, path) != 2 || path[0] != '/') {
         send_json_error(sock, 400, "Malformed HTTP request line.");
-        free(req);
-        closesocket(sock);
-        return 0;
+        goto cleanup;
     }
 
-    /* Strip query string if present */
     char *qmark = strchr(path, '?');
     if (qmark) *qmark = '\0';
 
-    const char *body = header_end + 4;
-
     if (strcmp(method, "OPTIONS") == 0) {
-        send_response_cors(sock, 204, "text/plain", allowed_origin, NULL, NULL, 0);
+        /* Compatibility with browsers that send a private-network preflight. */
+        const char *private_network = tl_allowed_origin == hosted_origin && headers.private_network &&
+                                      _stricmp(headers.private_network, "true") == 0
+            ? "Access-Control-Allow-Private-Network: true\r\nVary: Access-Control-Request-Private-Network\r\n" : NULL;
+        send_response(sock, 204, "text/plain", private_network, NULL, 0);
+    } else if (strcmp(method, "POST") == 0 && !is_json_content_type(headers.content_type)) {
+        send_json_error(sock, 415, "Send application/json with POST requests.");
     } else if (strcmp(method, "GET") == 0 && (strcmp(path, "/") == 0 || strcmp(path, "/dashboard.html") == 0)) {
         handle_dashboard(sock);
     } else if (strcmp(method, "POST") == 0 && strcmp(path, "/api/simulate") == 0) {
@@ -845,7 +904,8 @@ static DWORD WINAPI client_thread_proc(LPVOID param) {
         send_json_error(sock, 404, "Endpoint not found.");
     }
 
-    free(req);
+cleanup:
+    free(request);
     closesocket(sock);
     return 0;
 }
@@ -856,6 +916,13 @@ int main(int argc, char **argv) {
     if (argc >= 2 && strcmp(argv[1], "--test") == 0) {
         run_builtin_cli_test();
         return 0;
+    }
+
+    if (argc == 2 && strcmp(argv[1], "--allow-hosted") == 0) {
+        allow_hosted = 1;
+    } else if (argc != 1) {
+        fprintf(stderr, "Usage: simulator.exe [--test | --allow-hosted]\n");
+        return 1;
     }
 
     WSADATA wsa;
@@ -905,7 +972,8 @@ int main(int argc, char **argv) {
     printf(" CPU Model         : %s\n", hw.cpu_model);
     printf(" Physical Cores    : %d\n", hw.physical_cores);
     printf(" Logical Processors: %d\n", hw.logical_processors);
-    printf(" Dashboard URL     : http://localhost:%d/\n", SERVER_PORT);
+    printf(" Dashboard URL     : http://127.0.0.1:%d/\n", SERVER_PORT);
+    printf(" Hosted access     : %s\n", allow_hosted ? hosted_origin : "Disabled (start with --allow-hosted to enable)");
     printf(" Built-in Test     : simulator.exe --test\n");
     printf(" Press Ctrl+C to stop the server.\n");
     printf("==================================================================\n");

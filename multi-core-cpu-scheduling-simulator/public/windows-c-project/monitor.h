@@ -2,11 +2,14 @@
 #define MONITOR_H
 
 #define MAX_OS_PROCESSES 512
+#define MAX_AFFINITY_CORES 64
 
 typedef struct {
     char cpu_model[256];
     int physical_cores;
     int logical_processors;
+    int affinity_core_count;
+    int affinity_cores[MAX_AFFINITY_CORES];
 } HardwareInfo;
 
 typedef struct {

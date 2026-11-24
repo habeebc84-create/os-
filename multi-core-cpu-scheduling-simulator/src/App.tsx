@@ -37,6 +37,13 @@ import {
 } from './lib/schedulerEngine';
 import { runSchedulerJob } from './lib/runSchedulerJob';
 import { GanttTracks } from './components/GanttTracks';
+import {
+  canConnectToAgent,
+  fetchWithTimeout,
+  LOCAL_DASHBOARD_URL,
+  requestAgent,
+} from './lib/windowsAgent';
+import type { HardwareInfo, LaunchResult, LiveMetrics } from './lib/windowsAgent';
 
 type TabKey = 'scheduler' | 'hardware' | 'processes' | 'analytics';
 
@@ -79,44 +86,19 @@ const PREVIEW_PROCESSES: OSProcess[] = [
   { pid: 408, name: 'csrss.exe', memoryMB: 8.2 },
 ];
 
-function resolveBackendBaseUrl(): string {
-  const configured = (import.meta.env.VITE_BACKEND_URL || 'http://localhost:8080').trim();
-  try {
-    const parsed = new URL(configured);
-    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
-      return parsed.origin;
-    }
-  } catch {
-    // Fall back to default local C11 backend origin
-  }
-  return 'http://localhost:8080';
-}
+const PREVIEW_HARDWARE: HardwareInfo = {
+  cpuModel: 'Sample Windows processor',
+  physicalCores: 4,
+  logicalProcessors: 8,
+};
 
-async function fetchWithTimeout(
-  url: string,
-  options: RequestInit = {},
-  timeoutMs = 1500
-): Promise<Response> {
-  const controller = new AbortController();
-  const externalSignal = options.signal;
-  const onExternalAbort = () => controller.abort();
-  if (externalSignal) {
-    if (externalSignal.aborted) {
-      controller.abort();
-    } else {
-      externalSignal.addEventListener('abort', onExternalAbort, { once: true });
-    }
-  }
-  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    return await fetch(url, { ...options, signal: controller.signal });
-  } finally {
-    window.clearTimeout(timer);
-    if (externalSignal) {
-      externalSignal.removeEventListener('abort', onExternalAbort);
-    }
-  }
-}
+const WINDOWS_SOURCE_URL = '/windows-c-project/source.zip';
+const PREVIEW_CPU = 24.5;
+const PREVIEW_RAM = 56.2;
+const PREVIEW_CPU_SERIES = Array.from({ length: 60 }, (_, i) =>
+  Number((18 + Math.sin(i * 0.25) * 8 + (i % 5)).toFixed(1)));
+const PREVIEW_RAM_SERIES = Array.from({ length: 60 }, (_, i) =>
+  Number((54 + Math.cos(i * 0.15) * 3).toFixed(1)));
 
 function getNextSuggestedPid(list: ProcessInput[]): string {
   const existing = new Set(list.map((p) => p.pid.toLowerCase()));
@@ -206,10 +188,6 @@ function LiveSparkChart({ data, stroke, gradientId }: { data: number[]; stroke: 
 export default function App() {
   const [activeTab, setActiveTab] = useState<TabKey>('scheduler');
   const showHardware = activeTab === 'hardware';
-  const showHardwareRef = useRef(showHardware);
-  useEffect(() => {
-    showHardwareRef.current = showHardware;
-  }, [showHardware]);
   const [theme, setTheme] = useState(() => document.documentElement.dataset.theme === 'light' ? 'light' : 'dark');
 
   useEffect(() => {
@@ -270,42 +248,29 @@ export default function App() {
   const playProgressRef = useRef(0);
   const rafRef = useRef<number | null>(null);
 
-  // Backend configuration & live hardware monitor state
-  const backendBaseUrl = useMemo(() => resolveBackendBaseUrl(), []);
-  const canReachLocalBackend = useMemo(() => {
-    if (typeof window === 'undefined') return false;
-    // Prevent mixed-content console errors when served over HTTPS against an HTTP backend
-    if (window.location.protocol === 'https:' && backendBaseUrl.startsWith('http://')) {
-      return false;
-    }
-    return true;
-  }, [backendBaseUrl]);
-
   const [backendConnected, setBackendConnected] = useState(false);
+  const [autoConnect, setAutoConnect] = useState(window.location.protocol === 'http:');
   const backendConnectedRef = useRef(false);
-  const [hwInfo, setHwInfo] = useState(() => ({
-    cpuModel: 'Interactive Preview (Run simulator.exe on Windows for real Win32 Registry)',
-    physicalCores: Math.max(4, Math.floor((typeof navigator !== 'undefined' ? navigator.hardwareConcurrency || 8 : 8) / 2)),
-    logicalProcessors: typeof navigator !== 'undefined' ? navigator.hardwareConcurrency || 8 : 8,
-  }));
-  const [liveCpu, setLiveCpu] = useState(24.5);
-  const [liveRamPct, setLiveRamPct] = useState(56.2);
+  const connectionRequest = useRef<AbortController | null>(null);
+  const processRequest = useRef<AbortController | null>(null);
+  const [isConnecting, setIsConnecting] = useState(false);
+  const [connectionError, setConnectionError] = useState<string | null>(null);
+  const [hwInfo, setHwInfo] = useState(PREVIEW_HARDWARE);
+  const [liveCpu, setLiveCpu] = useState(PREVIEW_CPU);
+  const [liveRamPct, setLiveRamPct] = useState(PREVIEW_RAM);
   const [liveRamUsedGB, setLiveRamUsedGB] = useState(8.99);
-  const [liveRamTotalGB, setLiveRamTotalGB] = useState(16.0);
-  const liveCpuRef = useRef(24.5);
-  const liveRamRef = useRef(56.2);
-  const [cpuSeries, setCpuSeries] = useState<number[]>(() =>
-    Array.from({ length: 60 }, (_, i) => Number((18 + Math.sin(i * 0.25) * 8 + (i % 5)).toFixed(1)))
-  );
-  const [ramSeries, setRamSeries] = useState<number[]>(() =>
-    Array.from({ length: 60 }, (_, i) => Number((54 + Math.cos(i * 0.15) * 3).toFixed(1)))
-  );
+  const [liveRamTotalGB, setLiveRamTotalGB] = useState(16);
+  const liveCpuRef = useRef(PREVIEW_CPU);
+  const liveRamRef = useRef(PREVIEW_RAM);
+  const [cpuSeries, setCpuSeries] = useState(PREVIEW_CPU_SERIES);
+  const [ramSeries, setRamSeries] = useState(PREVIEW_RAM_SERIES);
 
-  // Process monitor state
-  const [osProcs, setOsProcs] = useState<OSProcess[]>(PREVIEW_PROCESSES);
-  const knownPidsRef = useRef<Set<number>>(new Set(PREVIEW_PROCESSES.map((p) => p.pid)));
+  const [liveProcesses, setLiveProcesses] = useState<OSProcess[] | null>(null);
+  const knownPidsRef = useRef<Set<number> | null>(null);
+  const [processLoadError, setProcessLoadError] = useState(false);
   const [isRefreshingProcs, setIsRefreshingProcs] = useState(false);
   const [launchingApp, setLaunchingApp] = useState<string | null>(null);
+  const [launchNotice, setLaunchNotice] = useState<{ message: string; error: boolean } | null>(null);
   const [procSearch, setProcSearch] = useState('');
   const [procSort, setProcSort] = useState<{ key: 'name' | 'pid' | 'memoryMB'; dir: 1 | -1 }>({
     key: 'memoryMB',
@@ -342,191 +307,208 @@ export default function App() {
     };
   }, []);
 
-  // Fetch hardware metadata from C11 backend when reachable
-  const fetchHardwareInfo = useCallback(async () => {
-    if (!canReachLocalBackend) return false;
+  const applyLiveMetrics = useCallback((metrics: LiveMetrics, resetHistory = false) => {
+    const { cpuPercent, ramPercent, ramUsedMB, ramTotalMB } = metrics;
+    if (![cpuPercent, ramPercent, ramUsedMB, ramTotalMB].every(Number.isFinite)) {
+      throw new Error('The Windows agent returned invalid hardware readings.');
+    }
+    const cpu = Math.max(0, Math.min(100, cpuPercent));
+    const ram = Math.max(0, Math.min(100, ramPercent));
+    setLiveCpu(cpu);
+    setLiveRamPct(ram);
+    setLiveRamUsedGB(ramUsedMB / 1024);
+    setLiveRamTotalGB(ramTotalMB / 1024);
+    setCpuSeries((series) => resetHistory ? [cpu] : [...series.slice(-59), cpu]);
+    setRamSeries((series) => resetHistory ? [ram] : [...series.slice(-59), ram]);
+  }, []);
+
+  const disconnectAgent = useCallback((message: string | null = null) => {
+    connectionRequest.current?.abort();
+    connectionRequest.current = null;
+    processRequest.current?.abort();
+    processRequest.current = null;
+    knownPidsRef.current = null;
+    backendConnectedRef.current = false;
+    liveCpuRef.current = PREVIEW_CPU;
+    liveRamRef.current = PREVIEW_RAM;
+    setBackendConnected(false);
+    setIsConnecting(false);
+    setConnectionError(message);
+    setHwInfo(PREVIEW_HARDWARE);
+    setLiveCpu(PREVIEW_CPU);
+    setLiveRamPct(PREVIEW_RAM);
+    setLiveRamUsedGB(8.99);
+    setLiveRamTotalGB(16);
+    setCpuSeries(PREVIEW_CPU_SERIES);
+    setRamSeries(PREVIEW_RAM_SERIES);
+    setLiveProcesses(null);
+    setProcessLoadError(false);
+    setIsRefreshingProcs(false);
+    setPinCore(-1);
+    setLaunchNotice(null);
+  }, []);
+
+  const connectAgent = useCallback(async (manual = true) => {
+    if (!canConnectToAgent || connectionRequest.current || backendConnectedRef.current) return;
+    const controller = new AbortController();
+    connectionRequest.current = controller;
+    if (manual) {
+      setIsConnecting(true);
+      setConnectionError(null);
+    }
+
     try {
-      const res = await fetchWithTimeout(`${backendBaseUrl}/api/hardware`, {}, 900);
-      if (!res.ok) return false;
-      const data = await res.json();
-      if (typeof data.cpuModel === 'string' && Number.isFinite(data.logicalProcessors)) {
-        setHwInfo({
-          cpuModel: data.cpuModel,
-          physicalCores: Number(data.physicalCores) || 1,
-          logicalProcessors: Number(data.logicalProcessors) || 1,
-        });
-        return true;
+      const options = { signal: controller.signal };
+      const hardware = await requestAgent<HardwareInfo>('/api/hardware', options, manual ? 30000 : 1500);
+      if (typeof hardware?.cpuModel !== 'string' || !Number.isInteger(hardware.physicalCores) ||
+          hardware.physicalCores <= 0 || !Number.isInteger(hardware.logicalProcessors) || hardware.logicalProcessors <= 0) {
+        throw new Error('Invalid response from the Windows agent.');
       }
+      const metrics = await requestAgent<LiveMetrics>('/api/live', options);
+      if (controller.signal.aborted) return;
+      const affinityCores = Array.isArray(hardware.affinityCores)
+        ? [...new Set(hardware.affinityCores.filter((core) => Number.isInteger(core) && core >= 0 && core < 64))]
+        : Array.from({ length: Math.min(32, hardware.logicalProcessors) }, (_, core) => core);
+      applyLiveMetrics(metrics, true);
+      setHwInfo({ ...hardware, affinityCores });
+      setConnectionError(null);
+      backendConnectedRef.current = true;
+      setBackendConnected(true);
     } catch {
-      // Backend offline
-    }
-    return false;
-  }, [backendBaseUrl, canReachLocalBackend]);
-
-  // Poll 1s live metrics (tries local C11 backend first; falls back cleanly to smooth preview telemetry)
-  useEffect(() => {
-    let active = true;
-    let inFlight = false;
-
-    const advancePreviewTelemetry = () => {
-      const nextCpu = Number(Math.min(92, Math.max(8, liveCpuRef.current + (Math.random() - 0.48) * 9)).toFixed(1));
-      const nextRam = Number(Math.min(84, Math.max(38, liveRamRef.current + (Math.random() - 0.5) * 1.4)).toFixed(1));
-      liveCpuRef.current = nextCpu;
-      liveRamRef.current = nextRam;
-      setLiveCpu(nextCpu);
-      setLiveRamPct(nextRam);
-      setLiveRamUsedGB(Number(((nextRam / 100) * 16.0).toFixed(2)));
-      setLiveRamTotalGB(16.0);
-      setCpuSeries((s) => [...s.slice(1), nextCpu]);
-      setRamSeries((s) => [...s.slice(1), nextRam]);
-    };
-
-    if (!canReachLocalBackend) {
-      const previewTimer = window.setInterval(() => {
-        if (showHardwareRef.current && !document.hidden) advancePreviewTelemetry();
-      }, 1000);
-      return () => window.clearInterval(previewTimer);
-    }
-
-    fetchHardwareInfo().then((ok) => {
-      if (!active) return;
-      backendConnectedRef.current = ok;
-      setBackendConnected(ok);
-    });
-
-    const timer = window.setInterval(async () => {
-      if (inFlight || document.hidden) return;
-      inFlight = true;
-      try {
-        const res = await fetchWithTimeout(`${backendBaseUrl}/api/live`, {}, 750);
-        if (res.ok && active) {
-          const m = await res.json();
-          if (!active) return;
-          const wasConnected = backendConnectedRef.current;
-          backendConnectedRef.current = true;
-          setBackendConnected(true);
-          if (!wasConnected) {
-            fetchHardwareInfo();
-          }
-          if (!showHardwareRef.current) return;
-          const cpuPct = Number(m.cpuPercent) || 0;
-          const ramPct = Number(m.ramPercent) || 0;
-          liveCpuRef.current = cpuPct;
-          liveRamRef.current = ramPct;
-          setLiveCpu(cpuPct);
-          setLiveRamPct(ramPct);
-          setLiveRamUsedGB((Number(m.ramUsedMB) || 0) / 1024);
-          setLiveRamTotalGB(Math.max(0.1, (Number(m.ramTotalMB) || 0) / 1024));
-          setCpuSeries((prev) => [...prev.slice(1), cpuPct]);
-          setRamSeries((prev) => [...prev.slice(1), ramPct]);
-          return;
-        }
-      } catch {
-        // Local C server offline — fall back to browser preview telemetry
-      } finally {
-        inFlight = false;
+      if (manual && !controller.signal.aborted) {
+        setConnectionError('Could not connect. Start the updated Windows agent and allow local network access if prompted. You can also open the local dashboard.');
       }
+    } finally {
+      if (connectionRequest.current === controller) {
+        connectionRequest.current = null;
+        if (manual) setIsConnecting(false);
+      }
+    }
+  }, [applyLiveMetrics]);
 
-      if (!active) return;
-      backendConnectedRef.current = false;
-      setBackendConnected(false);
-      if (showHardwareRef.current) advancePreviewTelemetry();
+  useEffect(() => {
+    if (!autoConnect || backendConnected) return;
+    void connectAgent(false);
+    const timer = window.setInterval(() => {
+      if (!document.hidden) void connectAgent(false);
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [autoConnect, backendConnected, connectAgent]);
+
+  useEffect(() => () => {
+    connectionRequest.current?.abort();
+    connectionRequest.current = null;
+    processRequest.current?.abort();
+    processRequest.current = null;
+  }, []);
+
+  useEffect(() => {
+    if (backendConnected || !showHardware) return;
+    const timer = window.setInterval(() => {
+      if (document.hidden) return;
+      liveCpuRef.current = Math.min(92, Math.max(8, liveCpuRef.current + (Math.random() - 0.48) * 9));
+      liveRamRef.current = Math.min(84, Math.max(38, liveRamRef.current + (Math.random() - 0.5) * 1.4));
+      applyLiveMetrics({
+        cpuPercent: liveCpuRef.current,
+        ramPercent: liveRamRef.current,
+        ramUsedMB: (liveRamRef.current / 100) * 16384,
+        ramTotalMB: 16384,
+      });
     }, 1000);
+    return () => window.clearInterval(timer);
+  }, [applyLiveMetrics, backendConnected, showHardware]);
 
-    return () => {
-      active = false;
-      window.clearInterval(timer);
-    };
-  }, [backendBaseUrl, canReachLocalBackend, fetchHardwareInfo]);
-
-  // Fetch real OS processes from C11 backend (or refresh preview memory jitter)
-  const fetchOsProcesses = useCallback(
-    async (manual = false) => {
-      setIsRefreshingProcs(true);
-      try {
-        if (backendConnectedRef.current && canReachLocalBackend) {
-          const res = await fetchWithTimeout(`${backendBaseUrl}/api/processes`, {}, 2500);
-          if (!res.ok) throw new Error('Failed to fetch Windows process list');
-          const data = await res.json();
-          const incoming: OSProcess[] = Array.isArray(data.processes)
-            ? data.processes.map((p: { pid: number; name: string; memoryMB: number }) => ({
-                pid: Number(p.pid) || 0,
-                name: String(p.name || 'unknown'),
-                memoryMB: Number(p.memoryMB) || 0,
-              }))
-            : [];
-          const prevKnown = knownPidsRef.current;
-          const isFirstReal = prevKnown.size === 0;
-          const annotated = incoming.map((p) => ({
-            ...p,
-            isNew: !isFirstReal && !prevKnown.has(p.pid),
-          }));
-          knownPidsRef.current = new Set(incoming.map((p) => p.pid));
-          setOsProcs(annotated);
-          if (manual) {
-            pushToast(`Refreshed ${incoming.length} live Windows processes`, '#64D2FF');
+  useEffect(() => {
+    if (!backendConnected) return;
+    const interval = showHardware ? 1000 : 3000;
+    const controller = new AbortController();
+    let timer: number;
+    let failures = 0;
+    const poll = async () => {
+      if (!document.hidden) {
+        try {
+          const metrics = await requestAgent<LiveMetrics>('/api/live', { signal: controller.signal }, 1500);
+          if (controller.signal.aborted || !backendConnectedRef.current) return;
+          if (showHardware) applyLiveMetrics(metrics);
+          failures = 0;
+        } catch {
+          if (controller.signal.aborted) return;
+          if (++failures >= 2) {
+            disconnectAgent('The Windows agent connection was lost. Restart the agent and reconnect.');
+            return;
           }
-          return;
         }
+      }
+      timer = window.setTimeout(poll, interval);
+    };
+    void poll();
+    return () => {
+      controller.abort();
+      window.clearTimeout(timer);
+    };
+  }, [applyLiveMetrics, backendConnected, disconnectAgent, showHardware]);
 
-        // Browser preview mode: gently update working set memory so Refresh has real visible effect
-        setOsProcs((prev) =>
-          prev.map((p) => ({
-            ...p,
-            isNew: false,
-            memoryMB: Number(Math.max(4.0, p.memoryMB + (Math.random() - 0.5) * 6.5).toFixed(1)),
-          }))
-        );
-        if (manual) {
-          pushToast('Process preview refreshed', '#64D2FF');
-        }
-      } catch (err) {
-        if (manual) {
-          pushToast((err as Error).message || 'Could not refresh processes', '#FF453A');
-        }
-      } finally {
+  const fetchOsProcesses = useCallback(async (manual = false) => {
+    if (!backendConnectedRef.current || processRequest.current) return;
+    const controller = new AbortController();
+    processRequest.current = controller;
+    setIsRefreshingProcs(true);
+    try {
+      const data = await requestAgent<{ processes: OSProcess[] }>('/api/processes', { signal: controller.signal });
+      if (controller.signal.aborted) return;
+      if (!Array.isArray(data?.processes)) throw new Error('Invalid Windows process list.');
+      const incoming = data.processes.filter((process) =>
+        Number.isInteger(process?.pid) && typeof process.name === 'string' && Number.isFinite(process.memoryMB));
+      const knownPids = knownPidsRef.current;
+      setLiveProcesses(incoming.map((process) => ({
+        ...process,
+        isNew: knownPids !== null && !knownPids.has(process.pid),
+      })));
+      knownPidsRef.current = new Set(incoming.map(({ pid }) => pid));
+      setProcessLoadError(false);
+      if (manual) pushToast(`Refreshed ${incoming.length} Windows processes`, '#64D2FF');
+    } catch {
+      if (!controller.signal.aborted) setProcessLoadError(true);
+    } finally {
+      if (processRequest.current === controller) {
+        processRequest.current = null;
         setIsRefreshingProcs(false);
       }
-    },
-    [backendBaseUrl, canReachLocalBackend, pushToast]
-  );
-
-  // Auto-fetch processes when Process Monitor tab is active
-  useEffect(() => {
-    if (activeTab !== 'processes') return;
-    if (backendConnected) {
-      fetchOsProcesses(false);
     }
-    const interval = window.setInterval(() => {
-      if (backendConnectedRef.current) {
-        fetchOsProcesses(false);
-      }
+  }, [pushToast]);
+
+  useEffect(() => {
+    if (activeTab !== 'processes' || !backendConnected) return;
+    void fetchOsProcesses();
+    const timer = window.setInterval(() => {
+      if (!document.hidden) void fetchOsProcesses();
     }, 4000);
-    return () => window.clearInterval(interval);
+    return () => window.clearInterval(timer);
   }, [activeTab, backendConnected, fetchOsProcesses]);
 
-  // Load C source files on demand when drawer opens (with res.ok check & AbortController)
+  const selectedSource = fileContents[selectedFile];
+
+  // Load the selected C source file on demand.
   useEffect(() => {
-    if (!codeDrawerOpen) return;
-    if (fileContents[selectedFile] && fileReloadNonce === 0) return;
+    if (!codeDrawerOpen || selectedSource) return;
 
     const controller = new AbortController();
     setFileLoading(true);
     setFileError(null);
 
-    fetchWithTimeout(`/windows-c-project/${selectedFile}`, { signal: controller.signal }, 6000)
-      .then(async (r) => {
-        if (!r.ok) {
-          throw new Error(`HTTP ${r.status} while loading ${selectedFile}`);
-        }
-        const text = await r.text();
-        // Guard against SPA fallback returning index.html for a missing source file
-        if (!selectedFile.endsWith('.html') && /^\s*<!doctype html>/i.test(text)) {
-          throw new Error(`Source file "${selectedFile}" was not found on the server.`);
-        }
-        if (!controller.signal.aborted) {
-          setFileContents((prev) => ({ ...prev, [selectedFile]: text }));
-        }
+    fetchWithTimeout(`/windows-c-project/${selectedFile}`, { signal: controller.signal }, 6000, async (response) => {
+      if (!response.ok) throw new Error(`HTTP ${response.status} while loading ${selectedFile}`);
+      const text = await response.text();
+      if (!text.trim() || /<div id="root"><\/div>/.test(text) ||
+          (!selectedFile.endsWith('.html') && /^\s*<!doctype html>/i.test(text))) {
+        throw new Error(`Source file "${selectedFile}" was not found on the server.`);
+      }
+      return text;
+    })
+      .then((text) => {
+        if (controller.signal.aborted) return;
+        setFileLoading(false);
+        setFileContents((prev) => ({ ...prev, [selectedFile]: text }));
       })
       .catch((err) => {
         if (!controller.signal.aborted) {
@@ -540,7 +522,7 @@ export default function App() {
       });
 
     return () => controller.abort();
-  }, [codeDrawerOpen, selectedFile, fileContents, fileReloadNonce]);
+  }, [codeDrawerOpen, selectedFile, selectedSource, fileReloadNonce]);
 
   // Close C11 source modal on Escape key
   useEffect(() => {
@@ -548,8 +530,13 @@ export default function App() {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') setCodeDrawerOpen(false);
     };
+    const overflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
     window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
+    return () => {
+      document.body.style.overflow = overflow;
+      window.removeEventListener('keydown', onKeyDown);
+    };
   }, [codeDrawerOpen]);
 
   const pidColorIndex = useMemo(() => {
@@ -602,10 +589,10 @@ export default function App() {
     setIsSimulating(true);
 
     try {
-      if (backendConnectedRef.current && canReachLocalBackend) {
+      if (backendConnectedRef.current) {
         try {
-          const res = await fetchWithTimeout(
-            `${backendBaseUrl}/api/simulate`,
+          const data = await requestAgent<SimResult>(
+            '/api/simulate',
             {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
@@ -619,12 +606,11 @@ export default function App() {
             },
             3000
           );
-          if (res.ok) {
-            const data: SimResult = await res.json();
-            setSimResult(data);
-            pushToast(`C11 backend simulation complete (${data.algorithm}, ${data.cores} cores)`, '#30D158');
-            return;
-          }
+          if (!Array.isArray(data?.gantt) || !Array.isArray(data?.ticks) || !Array.isArray(data?.processes) ||
+              !Array.isArray(data?.metrics?.coreUtilization)) throw new Error('Invalid Windows simulation result.');
+          setSimResult(data);
+          pushToast(`C11 backend simulation complete (${data.algorithm}, ${data.cores} cores)`, '#30D158');
+          return;
         } catch {
           // Seamless fallback to exact local TypeScript engine
         }
@@ -657,10 +643,10 @@ export default function App() {
       setCompareError(null);
       setIsComparing(true);
       try {
-        if (backendConnectedRef.current && canReachLocalBackend) {
+        if (backendConnectedRef.current) {
           try {
-            const res = await fetchWithTimeout(
-              `${backendBaseUrl}/api/compare`,
+            const data = await requestAgent<CompareResponse>(
+              '/api/compare',
               {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -668,14 +654,14 @@ export default function App() {
               },
               3500
             );
-            if (res.ok) {
-              const data: CompareResponse = await res.json();
-              if (request !== comparisonRequest.current) return;
-              setCompareResult(data);
-              setLastComparedSignature(workloadSignature);
-              if (!silent) pushToast('Compared all 5 scheduling algorithms (C11 backend)', '#BF5AF2');
-              return;
+            if (request !== comparisonRequest.current) return;
+            if (!Array.isArray(data?.results) || data.results.length !== 5 || !data.best) {
+              throw new Error('Invalid Windows comparison result.');
             }
+            setCompareResult(data);
+            setLastComparedSignature(workloadSignature);
+            if (!silent) pushToast('Compared all 5 scheduling algorithms (C11 backend)', '#BF5AF2');
+            return;
           } catch {
             // Fall back to local engine
           }
@@ -691,7 +677,7 @@ export default function App() {
         if (request === comparisonRequest.current) setIsComparing(false);
       }
     },
-    [backendBaseUrl, canReachLocalBackend, cores, priorityMode, processes, pushToast, quantum, workloadSignature]
+    [cores, priorityMode, processes, pushToast, quantum, workloadSignature]
   );
 
   // Auto-sync Performance Analytics when user opens the tab after modifying workload/config
@@ -843,52 +829,25 @@ export default function App() {
   };
 
   const handleLaunchApp = async (app: 'chrome' | 'vscode' | 'notepad' | 'calculator') => {
-    if (launchingApp) return;
-    const names: Record<string, string> = {
-      chrome: 'Google Chrome',
-      vscode: 'VS Code',
-      notepad: 'Notepad',
-      calculator: 'Calculator',
-    };
-    const exeNames: Record<string, string> = {
-      chrome: 'chrome.exe',
-      vscode: 'Code.exe',
-      notepad: 'notepad.exe',
-      calculator: 'CalculatorApp.exe',
-    };
+    if (launchingApp || !backendConnectedRef.current) return;
     setLaunchingApp(app);
+    setLaunchNotice(null);
     try {
-      if (backendConnectedRef.current && canReachLocalBackend) {
-        const res = await fetchWithTimeout(
-          `${backendBaseUrl}/api/launch`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ app, core: pinCore }),
-          },
-          4000
-        );
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.message || data.error || 'Launch failed');
-        pushToast(data.message || `${names[app]} launched`, '#30D158');
-        window.setTimeout(() => fetchOsProcesses(false), 1200);
-        return;
+      const data = await requestAgent<LaunchResult>('/api/launch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ app, core: hwInfo.affinityCores?.includes(pinCore) ? pinCore : -1 }),
+      }, 8000);
+      if (!data?.launched || !Number.isInteger(data.pid) || data.pid <= 0) {
+        throw new Error(data?.message || 'The Windows agent did not confirm the launch.');
       }
-
-      // Collision-free simulated PID in browser preview mode
-      let simPid = 8000 + Math.floor(Math.random() * 1900);
-      const existingPids = new Set(osProcs.map((p) => p.pid));
-      while (existingPids.has(simPid)) simPid++;
-      setOsProcs((prev) => [
-        { pid: simPid, name: exeNames[app], memoryMB: Number((28 + Math.random() * 180).toFixed(1)), isNew: true },
-        ...prev.map((p) => ({ ...p, isNew: false })),
-      ]);
-      pushToast(
-        `${names[app]} preview added (PID ${simPid}${pinCore >= 0 ? `, Core ${pinCore}` : ''}) — run simulator.exe on Windows to spawn real Win32 process`,
-        '#30D158'
-      );
+      setLaunchNotice({ message: data.message || `Application launched (PID ${data.pid}).`, error: false });
+      void fetchOsProcesses();
     } catch (err) {
-      pushToast((err as Error).message || 'Launch failed', '#FF453A');
+      const message = err instanceof Error && !['AbortError', 'TypeError'].includes(err.name)
+        ? err.message
+        : 'Could not confirm the launch. Check Windows before trying again.';
+      setLaunchNotice({ message, error: true });
     } finally {
       setLaunchingApp(null);
     }
@@ -920,9 +879,10 @@ export default function App() {
     }
   };
 
+  const osProcs = backendConnected ? liveProcesses : PREVIEW_PROCESSES;
   const filteredOsProcs = useMemo(() => {
     const q = procSearch.trim().toLowerCase();
-    return osProcs
+    return (osProcs ?? [])
       .filter((p) => !q || p.name.toLowerCase().includes(q) || String(p.pid).includes(q))
       .sort((a, b) => {
         const av = a[procSort.key];
@@ -1060,11 +1020,7 @@ export default function App() {
                   }`}
                 />
                 <span className="truncate">
-                  {backendConnected
-                    ? 'Backend connected'
-                    : canReachLocalBackend
-                      ? 'Disconnected (Browser Preview)'
-                      : 'Browser Preview (HTTPS)'}
+                  {backendConnected ? 'Windows agent connected' : 'Browser preview'}
                 </span>
               </div>
             </div>
@@ -1556,23 +1512,65 @@ export default function App() {
             </div>
           )}
 
+          {(activeTab === 'hardware' || activeTab === 'processes') && (
+            <section className="liquid-glass px-5 py-4" aria-labelledby="windows-agent-title">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="space-y-1.5">
+                  <h2 id="windows-agent-title" className="text-sm font-bold">
+                    {backendConnected ? 'Windows agent connected' : 'Connect your Windows PC'}
+                  </h2>
+                  {backendConnected ? (
+                    <p className="text-xs text-muted">Showing live data from the Windows agent.</p>
+                  ) : (
+                    <p className="text-xs text-muted max-w-2xl">
+                      Download and extract the C11 project on Windows. Run <code>build.bat</code> with MinGW,
+                      then start <code>simulator.exe --allow-hosted</code> and select Connect. Allow local
+                      network access if your browser asks.
+                    </p>
+                  )}
+                </div>
+                {backendConnected ? (
+                  <button type="button" onClick={() => {
+                    setAutoConnect(false);
+                    disconnectAgent();
+                  }}
+                    className="h-9 px-3 rounded-full border border-neutral-ui/18 text-xs font-semibold cursor-pointer">
+                    Disconnect
+                  </button>
+                ) : (
+                  <button type="button" disabled={isConnecting || !canConnectToAgent} onClick={() => void connectAgent()}
+                    className="h-9 px-4 rounded-full bg-[var(--primary-action)] text-white text-xs font-semibold cursor-pointer disabled:opacity-60">
+                    {isConnecting ? 'Connecting…' : 'Connect Windows Agent'}
+                  </button>
+                )}
+              </div>
+              {!backendConnected && (
+                <div className="mt-3 flex flex-wrap gap-x-4 gap-y-2 text-xs font-semibold text-info">
+                  <a href={WINDOWS_SOURCE_URL} download="windows-c11-project.zip" className="hover:underline">Download Windows C11 ZIP</a>
+                  <a href={LOCAL_DASHBOARD_URL} target="_blank" rel="noopener noreferrer" className="hover:underline">Open local dashboard</a>
+                </div>
+              )}
+              {connectionError && <p className="mt-3 text-xs text-danger" role="alert">{connectionError}</p>}
+            </section>
+          )}
+
           {/* ================= TAB 2: LIVE HARDWARE MONITOR ================= */}
           {activeTab === 'hardware' && (
             <div className="flex flex-col gap-5">
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div className="liquid-glass p-5">
-                  <div className="text-xs font-semibold text-muted">Processor Model (Win32 Registry)</div>
+                  <div className="text-xs font-semibold text-muted">{backendConnected ? 'Processor Model (Win32 Registry)' : 'Processor Model (Sample)'}</div>
                   <div className="text-base font-bold mt-2 leading-snug">{hwInfo.cpuModel}</div>
                 </div>
                 <div className="liquid-glass p-5">
                   <div className="text-xs font-semibold text-muted">Physical Cores</div>
                   <div className="text-3xl font-extrabold mt-1 tabular-nums">{hwInfo.physicalCores}</div>
-                  <div className="text-[11px] text-muted mt-1">GetLogicalProcessorInformation</div>
+                  <div className="text-[11px] text-muted mt-1">{backendConnected ? 'GetLogicalProcessorInformation' : 'Sample hardware topology'}</div>
                 </div>
                 <div className="liquid-glass p-5">
                   <div className="text-xs font-semibold text-muted">Logical Processors</div>
                   <div className="text-3xl font-extrabold mt-1 tabular-nums">{hwInfo.logicalProcessors}</div>
-                  <div className="text-[11px] text-muted mt-1">Hardware execution threads</div>
+                  <div className="text-[11px] text-muted mt-1">{backendConnected ? 'Hardware execution threads' : 'Sample hardware topology'}</div>
                 </div>
               </div>
 
@@ -1611,7 +1609,9 @@ export default function App() {
                   <div className="flex-1 min-w-[180px]">
                     <h3 className="text-base font-bold">Live System CPU Utilization</h3>
                     <p className="text-xs text-muted mt-1.5 leading-relaxed">
-                      Calculated every 1 second via Windows <code className="text-info">GetSystemTimes</code> delta
+                      {backendConnected
+                        ? <>Measured using <code className="text-info">GetSystemTimes</code>.</>
+                        : 'Simulated CPU usage.'}
                       across idle, kernel, and user time counters.
                     </p>
                   </div>
@@ -1654,7 +1654,9 @@ export default function App() {
                       {liveRamUsedGB.toFixed(2)} GB / {liveRamTotalGB.toFixed(2)} GB used
                     </div>
                     <p className="text-xs text-muted mt-1">
-                      Observed via Windows <code className="text-accent">GlobalMemoryStatusEx</code>.
+                      {backendConnected
+                        ? <>Measured using <code className="text-accent">GlobalMemoryStatusEx</code>.</>
+                        : 'Simulated RAM usage.'}
                     </p>
                   </div>
                 </div>
@@ -1663,12 +1665,12 @@ export default function App() {
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
                 <div className="liquid-glass p-5 sm:p-6">
                   <h3 className="text-base font-bold mb-1">CPU Utilization — Last 60 Seconds</h3>
-                  <p className="text-xs text-muted mb-4">1 Hz live rolling window</p>
+                  <p className="text-xs text-muted mb-4">{backendConnected ? 'Live Windows readings' : 'Simulated preview readings'}</p>
                   <LiveSparkChart data={cpuSeries} stroke="#0A84FF" gradientId="cpuAreaFill" />
                 </div>
                 <div className="liquid-glass p-5 sm:p-6">
                   <h3 className="text-base font-bold mb-1">RAM Utilization — Last 60 Seconds</h3>
-                  <p className="text-xs text-muted mb-4">1 Hz live rolling window</p>
+                  <p className="text-xs text-muted mb-4">{backendConnected ? 'Live Windows readings' : 'Simulated preview readings'}</p>
                   <LiveSparkChart data={ramSeries} stroke="#BF5AF2" gradientId="ramAreaFill" />
                 </div>
               </div>
@@ -1695,12 +1697,13 @@ export default function App() {
                       id="pinCoreSelect"
                       value={pinCore}
                       onChange={(e) => setPinCore(Number(e.target.value))}
-                      className="h-9 px-3 rounded-xl panel-inset border border-neutral-ui/18 text-xs text-ink outline-none focus:border-[#0A84FF]"
+                      disabled={!backendConnected || !hwInfo.affinityCores?.length || launchingApp !== null}
+                      className="h-9 px-3 rounded-xl panel-inset border border-neutral-ui/18 text-xs text-ink outline-none focus:border-[#0A84FF] disabled:opacity-50"
                     >
                       <option value={-1}>OS Default (Auto)</option>
-                      {Array.from({ length: Math.min(32, Math.max(1, hwInfo.logicalProcessors)) }, (_, i) => (
-                        <option key={i} value={i}>
-                          Core {i}
+                      {hwInfo.affinityCores?.map((core) => (
+                        <option key={core} value={core}>
+                          Core {core}
                         </option>
                       ))}
                     </select>
@@ -1709,7 +1712,7 @@ export default function App() {
                 <div className="flex flex-wrap gap-2.5">
                   <button
                     type="button"
-                    disabled={launchingApp !== null}
+                    disabled={!backendConnected || launchingApp !== null}
                     onClick={() => handleLaunchApp('chrome')}
                     className="h-10 px-5 rounded-full text-xs font-semibold text-ink cursor-pointer spring-btn disabled:opacity-55 disabled:cursor-not-allowed"
                     style={{ background: 'linear-gradient(135deg, #0A84FF, #38BDF8)' }}
@@ -1718,7 +1721,7 @@ export default function App() {
                   </button>
                   <button
                     type="button"
-                    disabled={launchingApp !== null}
+                    disabled={!backendConnected || launchingApp !== null}
                     onClick={() => handleLaunchApp('vscode')}
                     className="h-10 px-5 rounded-full text-xs font-semibold text-ink cursor-pointer spring-btn disabled:opacity-55 disabled:cursor-not-allowed"
                     style={{ background: 'linear-gradient(135deg, #5E5CE6, #BF5AF2)' }}
@@ -1727,7 +1730,7 @@ export default function App() {
                   </button>
                   <button
                     type="button"
-                    disabled={launchingApp !== null}
+                    disabled={!backendConnected || launchingApp !== null}
                     onClick={() => handleLaunchApp('notepad')}
                     className="h-10 px-5 rounded-full bg-[#30D158]/25 border border-[#30D158]/45 text-xs font-semibold text-ink cursor-pointer spring-btn disabled:opacity-55 disabled:cursor-not-allowed"
                   >
@@ -1735,23 +1738,32 @@ export default function App() {
                   </button>
                   <button
                     type="button"
-                    disabled={launchingApp !== null}
+                    disabled={!backendConnected || launchingApp !== null}
                     onClick={() => handleLaunchApp('calculator')}
                     className="h-10 px-5 rounded-full bg-[#FF9F0A]/25 border border-[#FF9F0A]/45 text-xs font-semibold text-ink cursor-pointer spring-btn disabled:opacity-55 disabled:cursor-not-allowed"
                   >
                     {launchingApp === 'calculator' ? 'Launching...' : 'Launch Calculator'}
                   </button>
                 </div>
+                {!backendConnected && (
+                  <p className="text-xs text-muted mt-3">Connect the Windows agent to launch applications.</p>
+                )}
+                {launchNotice && (
+                  <p role={launchNotice.error ? 'alert' : 'status'} className={`mt-3 text-xs ${launchNotice.error ? 'text-danger' : 'text-success'}`}>
+                    {launchNotice.message}
+                  </p>
+                )}
               </div>
 
               <div className="liquid-glass p-5 sm:p-6">
                 <div className="flex items-center justify-between gap-4 flex-wrap mb-4">
                   <div>
                     <h2 className="text-[17px] font-bold">
-                      Running Windows Processes (<span className="tabular-nums">{filteredOsProcs.length}</span>)
+                      {backendConnected ? 'Running Windows Processes' : 'Sample Process List'}{' '}
+                      (<span className="tabular-nums">{filteredOsProcs.length}</span>)
                     </h2>
                     <p className="text-xs text-muted mt-0.5">
-                      Toolhelp32Snapshot + GetProcessMemoryInfo (click columns to sort)
+                      {backendConnected ? 'Toolhelp32Snapshot + GetProcessMemoryInfo.' : 'Example processes for exploring search and sorting.'}
                     </p>
                   </div>
                   <div className="flex items-center gap-2.5 flex-wrap w-full sm:w-auto">
@@ -1777,7 +1789,7 @@ export default function App() {
                     </div>
                     <button
                       type="button"
-                      disabled={isRefreshingProcs}
+                      disabled={!backendConnected || isRefreshingProcs}
                       onClick={() => fetchOsProcesses(true)}
                       className="h-9 px-3.5 rounded-full bg-neutral-ui/10 hover:bg-neutral-ui/18 border border-neutral-ui/18 text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer spring-btn disabled:opacity-60"
                     >
@@ -1787,37 +1799,29 @@ export default function App() {
                   </div>
                 </div>
 
+                {processLoadError && (
+                  <p className="mb-3 text-xs text-danger" role="alert">Could not refresh the Windows process list. Select Refresh to retry.</p>
+                )}
                 <div className="overflow-x-auto max-h-[420px]">
                   <table className="w-full text-sm tabular-nums">
                     <thead>
                       <tr className="text-left text-xs text-muted border-b border-neutral-ui/14">
-                        <th
-                          onClick={() =>
-                            setProcSort((s) => ({ key: 'name', dir: s.key === 'name' ? (s.dir === 1 ? -1 : 1) : 1 }))
-                          }
-                          className="py-2.5 pr-4 cursor-pointer hover:text-ink select-none"
-                        >
-                          Process Name {sortArrow('name')}
-                        </th>
-                        <th
-                          onClick={() =>
-                            setProcSort((s) => ({ key: 'pid', dir: s.key === 'pid' ? (s.dir === 1 ? -1 : 1) : 1 }))
-                          }
-                          className="py-2.5 px-4 cursor-pointer hover:text-ink select-none"
-                        >
-                          PID {sortArrow('pid')}
-                        </th>
-                        <th
-                          onClick={() =>
-                            setProcSort((s) => ({
-                              key: 'memoryMB',
-                              dir: s.key === 'memoryMB' ? (s.dir === 1 ? -1 : 1) : -1,
-                            }))
-                          }
-                          className="py-2.5 pl-4 cursor-pointer hover:text-ink select-none"
-                        >
-                          Working Set Memory (MB) {sortArrow('memoryMB')}
-                        </th>
+                        {([
+                          { key: 'name', label: 'Process Name', padding: 'pr-4', defaultDir: 1 },
+                          { key: 'pid', label: 'PID', padding: 'px-4', defaultDir: 1 },
+                          { key: 'memoryMB', label: 'Working Set Memory (MB)', padding: 'pl-4', defaultDir: -1 },
+                        ] as const).map(({ key, label, padding, defaultDir }) => (
+                          <th key={key} scope="col" className={`py-2.5 ${padding}`}
+                            aria-sort={procSort.key === key ? (procSort.dir === 1 ? 'ascending' : 'descending') : undefined}>
+                            <button type="button" className="cursor-pointer text-left hover:text-ink"
+                              onClick={() => setProcSort((sort) => ({
+                                key,
+                                dir: sort.key === key ? (sort.dir === 1 ? -1 : 1) : defaultDir,
+                              }))}>
+                              {label} <span aria-hidden="true">{sortArrow(key)}</span>
+                            </button>
+                          </th>
+                        ))}
                       </tr>
                     </thead>
                     <tbody>
@@ -1836,7 +1840,9 @@ export default function App() {
                       {!filteredOsProcs.length && (
                         <tr>
                           <td colSpan={3} className="py-8 text-center text-xs text-muted">
-                            No matching processes found for &ldquo;{procSearch}&rdquo;.
+                            {liveProcesses === null && backendConnected
+                              ? processLoadError ? 'Process list unavailable.' : 'Loading Windows processes…'
+                              : procSearch ? <>No processes match “{procSearch}”.</> : 'No processes found.'}
                           </td>
                         </tr>
                       )}
@@ -2069,8 +2075,7 @@ export default function App() {
 
           {/* Mandatory Footer Note */}
           <footer className="liquid-glass px-5 py-3.5 text-center text-xs text-muted">
-            The agent observes real Windows activity. The simulator models scheduling independently and does not control the
-            Windows kernel scheduler.
+            Scheduling uses the process queue you enter. Connect the Windows agent to monitor your PC and launch apps.
           </footer>
         </main>
       </div>
@@ -2108,13 +2113,21 @@ export default function App() {
                 <X className="w-4 h-4" />
               </button>
             </div>
-            <div className="flex-1 grid grid-cols-1 md:grid-cols-[240px_1fr] min-h-0">
+            <div className="px-4 py-2.5 border-b border-neutral-ui/12">
+              <a href={WINDOWS_SOURCE_URL} download="windows-c11-project.zip"
+                className="inline-flex items-center gap-1.5 rounded-full bg-[var(--primary-action)] text-white px-3 py-2 text-xs font-semibold">
+                <Download className="w-3.5 h-3.5" />
+                Download all 8 files (ZIP)
+              </a>
+            </div>
+            <div className="flex-1 grid grid-rows-[auto_minmax(0,1fr)] md:grid-rows-1 md:grid-cols-[240px_minmax(0,1fr)] min-h-0">
               <div className="border-b md:border-b-0 md:border-r border-neutral-ui/12 p-3 overflow-y-auto max-h-44 md:max-h-none space-y-1.5">
                 {C_PROJECT_FILES.map((f) => (
                   <button
                     key={f.name}
                     type="button"
                     onClick={() => {
+                      if (selectedFile === f.name) return;
                       setSelectedFile(f.name);
                       setFileError(null);
                       setFileReloadNonce(0);

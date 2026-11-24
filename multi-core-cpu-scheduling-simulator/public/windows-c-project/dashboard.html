@@ -5,10 +5,6 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Multi-Core CPU Scheduling Simulator</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚙️</text></svg>" />
-<link rel="preconnect" href="https://fonts.googleapis.com" />
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js" defer></script>
 <style>
   :root {
     --blue: #0A84FF;
@@ -658,12 +654,18 @@
   .gauge-unit { font-size: 11.5px; color: var(--text-secondary); font-weight: 600; }
 
   /* Chart Containers */
-  .chart-box { position: relative; height: 250px; width: 100%; }
-  .chart-fallback {
-    height: 220px; display: flex; align-items: center; justify-content: center; text-align: center;
-    color: var(--text-secondary); font-size: 13.5px; padding: 20px;
-    border-radius: 16px; background: rgba(255,255,255,0.04); border: 1px dashed rgba(255,255,255,0.16);
+  .chart-box { min-width: 0; width: 100%; }
+  .history-chart { display: block; width: 100%; height: auto; }
+  .comparison-chart { display: grid; gap: 14px; }
+  .comparison-group { display: grid; gap: 4px; }
+  .comparison-group strong { font-size: 13px; }
+  .comparison-row {
+    display: grid; grid-template-columns: minmax(95px, 120px) minmax(36px, 1fr) 48px;
+    align-items: center; gap: 6px; color: var(--text-secondary); font-size: 11px;
   }
+  .comparison-row output { text-align: right; }
+  .comparison-track { height: 8px; background: rgba(255,255,255,0.1); border-radius: 6px; }
+  .comparison-track span { display: block; height: 100%; border-radius: inherit; }
 
   /* Shimmer Skeleton */
   .skeleton {
@@ -1047,13 +1049,13 @@
             <div class="section-head">
               <div><div class="section-title">CPU Utilization — Last 60 Seconds</div><div class="section-sub">Real-time 1 Hz rolling window</div></div>
             </div>
-            <div class="chart-box" id="cpuChartWrap"><canvas id="cpuLineChart"></canvas></div>
+            <div class="chart-box" id="cpuChartWrap"></div>
           </div>
           <div class="glass glass-card">
             <div class="section-head">
               <div><div class="section-title">RAM Utilization — Last 60 Seconds</div><div class="section-sub">Real-time 1 Hz rolling window</div></div>
             </div>
-            <div class="chart-box" id="ramChartWrap"><canvas id="ramLineChart"></canvas></div>
+            <div class="chart-box" id="ramChartWrap"></div>
           </div>
         </div>
       </section>
@@ -1155,11 +1157,11 @@
         <div class="grid-2">
           <div class="glass glass-card">
             <div class="section-head"><div class="section-title">Timing Metrics (Waiting, Turnaround, Response)</div></div>
-            <div class="chart-box" id="cmpTimingWrap"><canvas id="cmpTimingChart"></canvas></div>
+            <div class="chart-box" id="cmpTimingWrap"></div>
           </div>
           <div class="glass glass-card">
             <div class="section-head"><div class="section-title">CPU Utilization (%) &amp; Context Switches</div></div>
-            <div class="chart-box" id="cmpUtilWrap"><canvas id="cmpUtilChart"></canvas></div>
+            <div class="chart-box" id="cmpUtilWrap"></div>
           </div>
         </div>
       </section>
@@ -1205,8 +1207,7 @@
   let procSort = { key: 'memoryMB', dir: -1 };
   let cpuHistory = Array(60).fill(null);
   let ramHistory = Array(60).fill(null);
-  let timeLabels = Array.from({ length: 60 }, (_, i) => `${i - 59}s`);
-  let cpuChart = null, ramChart = null, cmpTimingChart = null, cmpUtilChart = null;
+
   let activeTab = 'scheduler';
 
   const $ = (id) => document.getElementById(id);
@@ -1275,7 +1276,7 @@
       p.classList.toggle('active', p.id === `tab-${tabName}`);
     });
     if (tabName === 'processes') fetchProcesses();
-    if (tabName === 'hardware') initLiveCharts();
+    if (tabName === 'hardware') renderHistoryCharts();
   }
   navBtns.forEach(btn => {
     btn.addEventListener('click', () => switchTab(btn.dataset.tab, Number(btn.dataset.index)));
@@ -1570,44 +1571,30 @@
     $(arcId).style.strokeDashoffset = String(circ * (1 - clamped / 100));
   }
 
-  function initLiveCharts() {
-    if (cpuChart && ramChart) return;
-    if (typeof Chart === 'undefined') {
-      const msg = '<div class="chart-fallback">Chart.js CDN could not be loaded (offline mode). Live circular gauges above remain fully active.</div>';
-      $('cpuChartWrap').innerHTML = msg;
-      $('ramChartWrap').innerHTML = msg;
-      return;
-    }
-    const commonOpts = (color) => ({
-      responsive: true,
-      maintainAspectRatio: false,
-      animation: { duration: 350 },
-      plugins: { legend: { display: false } },
-      scales: {
-        x: { grid: { color: 'rgba(255,255,255,0.06)' }, ticks: { color: 'rgba(255,255,255,0.45)', maxTicksLimit: 7 } },
-        y: { min: 0, max: 100, grid: { color: 'rgba(255,255,255,0.08)' }, ticks: { color: 'rgba(255,255,255,0.55)', callback: v => v + '%' } }
-      }
-    });
+  function renderHistoryChart(container, history, label, color) {
+    const points = history.flatMap((value, index) => Number.isFinite(value)
+      ? [[36 + index * 452 / (history.length - 1), 174 - Math.min(100, Math.max(0, value)) * 1.6]]
+      : []);
+    const grid = [0, 25, 50, 75, 100].map(value => {
+      const y = 174 - value * 1.6;
+      return `<path d="M36 ${y}H488" stroke="rgba(255,255,255,0.14)" stroke-dasharray="3 4"/>
+        <text x="32" y="${y + 4}" text-anchor="end">${value}%</text>`;
+    }).join('');
+    const line = points.length > 1
+      ? `<polyline points="${points.map(point => point.join(',')).join(' ')}" fill="none" stroke="${color}" stroke-width="2.5"/>`
+      : points.length === 1
+        ? `<circle cx="${points[0][0]}" cy="${points[0][1]}" r="3" fill="${color}"/>`
+        : '';
+    const latest = history.at(-1);
+    const description = latest === null ? label : `${label}, latest ${latest.toFixed(1)} percent`;
+    $(container).innerHTML = `<svg class="history-chart" viewBox="0 0 500 198" role="img" aria-label="${description}">
+      <g fill="#cbd5e1" font-size="11">${grid}<text x="36" y="193">−59 s</text>
+      <text x="488" y="193" text-anchor="end">Now</text></g>${line}</svg>`;
+  }
 
-    const cpuCtx = $('cpuLineChart').getContext('2d');
-    const cpuFill = cpuCtx.createLinearGradient(0, 0, 0, 240);
-    cpuFill.addColorStop(0, 'rgba(10,132,255,0.45)');
-    cpuFill.addColorStop(1, 'rgba(10,132,255,0.02)');
-    cpuChart = new Chart(cpuCtx, {
-      type: 'line',
-      data: { labels: timeLabels, datasets: [{ data: cpuHistory, borderColor: '#0A84FF', backgroundColor: cpuFill, fill: true, tension: 0.35, pointRadius: 0, borderWidth: 2.5 }] },
-      options: commonOpts('#0A84FF')
-    });
-
-    const ramCtx = $('ramLineChart').getContext('2d');
-    const ramFill = ramCtx.createLinearGradient(0, 0, 0, 240);
-    ramFill.addColorStop(0, 'rgba(191,90,242,0.45)');
-    ramFill.addColorStop(1, 'rgba(191,90,242,0.02)');
-    ramChart = new Chart(ramCtx, {
-      type: 'line',
-      data: { labels: timeLabels, datasets: [{ data: ramHistory, borderColor: '#BF5AF2', backgroundColor: ramFill, fill: true, tension: 0.35, pointRadius: 0, borderWidth: 2.5 }] },
-      options: commonOpts('#BF5AF2')
-    });
+  function renderHistoryCharts() {
+    renderHistoryChart('cpuChartWrap', cpuHistory, 'CPU utilization history', '#0A84FF');
+    renderHistoryChart('ramChartWrap', ramHistory, 'RAM utilization history', '#BF5AF2');
   }
 
   async function fetchHardware() {
@@ -1620,10 +1607,12 @@
       $('hwLogCores').textContent = hw.logicalProcessors;
 
       const pinSel = $('pinCoreSelect');
-      pinSel.innerHTML = '<option value="-1">OS Default (Auto)</option>';
-      for (let c = 0; c < Math.min(32, hw.logicalProcessors || 4); c++) {
-        pinSel.innerHTML += `<option value="${c}">Core ${c}</option>`;
-      }
+      const selectedCore = Number(pinSel.value);
+      const affinityCores = Array.isArray(hw.affinityCores) ? hw.affinityCores
+        : Array.from({ length: Math.min(32, hw.logicalProcessors || 1) }, (_, core) => core);
+      pinSel.replaceChildren(new Option('OS Default (Auto)', '-1'));
+      for (const core of affinityCores) pinSel.add(new Option(`Core ${core}`, String(core)));
+      if (affinityCores.includes(selectedCore)) pinSel.value = String(selectedCore);
       setBackendOnline(true);
     } catch {
       setBackendOnline(false);
@@ -1649,15 +1638,14 @@
 
       cpuHistory.push(m.cpuPercent); cpuHistory.shift();
       ramHistory.push(m.ramPercent); ramHistory.shift();
-      if (cpuChart) cpuChart.update('none');
-      if (ramChart) ramChart.update('none');
+      if (activeTab === 'hardware') renderHistoryCharts();
     } catch {
       setBackendOnline(false);
     }
   }
 
   /* ================= TAB 3: PROCESS MONITOR ================= */
-  async function fetchProcesses() {
+  async function fetchProcesses(manual = false) {
     try {
       const res = await fetch(`${API_BASE}/api/processes`);
       if (!res.ok) throw new Error();
@@ -1666,8 +1654,10 @@
       $('procCountText').textContent = data.count;
       renderOsProcesses();
       setBackendOnline(true);
+      if (manual) showToast(`Refreshed ${data.count} Windows processes`, '#64D2FF');
     } catch {
       setBackendOnline(false);
+      if (manual) showToast('Could not refresh Windows processes', '#FF453A');
     }
   }
 
@@ -1699,7 +1689,7 @@
   }
 
   $('procSearch').addEventListener('input', renderOsProcesses);
-  $('refreshProcsBtn').addEventListener('click', () => { fetchProcesses(); showToast('Process list refreshed', '#64D2FF'); });
+  $('refreshProcsBtn').addEventListener('click', () => fetchProcesses(true));
   document.querySelectorAll('th.sortable').forEach(th => {
     th.addEventListener('click', () => {
       const k = th.dataset.sort;
@@ -1718,7 +1708,7 @@
         body: JSON.stringify({ app, core })
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.message || data.error || 'Launch failed');
+      if (!res.ok || !data.launched) throw new Error(data.message || data.error || 'Launch failed');
       showToast(data.message || `${app} launched`, '#30D158');
       setTimeout(fetchProcesses, 1200);
     } catch (err) {
@@ -1770,55 +1760,33 @@
       </tr>`;
     }).join('');
 
-    if (typeof Chart === 'undefined') {
-      const msg = '<div class="chart-fallback">Chart.js CDN unavailable offline. Use the comparison table above or Download CSV Report.</div>';
-      $('cmpTimingWrap').innerHTML = msg;
-      $('cmpUtilWrap').innerHTML = msg;
-      return;
-    }
+    const timingMax = Math.max(1, ...data.results.flatMap(({ metrics }) =>
+      [metrics.avgWaiting, metrics.avgTurnaround, metrics.avgResponse]));
+    const switchMax = Math.max(1, ...data.results.map(({ metrics }) => metrics.contextSwitches));
+    renderComparisonChart('cmpTimingWrap', data.results, [
+      { key: 'avgWaiting', label: 'Avg waiting', color: '#0A84FF', max: timingMax },
+      { key: 'avgTurnaround', label: 'Avg turnaround', color: '#BF5AF2', max: timingMax },
+      { key: 'avgResponse', label: 'Avg response', color: '#FF9F0A', max: timingMax },
+    ]);
+    renderComparisonChart('cmpUtilWrap', data.results, [
+      { key: 'cpuUtilization', label: 'CPU utilization', color: '#30D158', max: 100, suffix: '%' },
+      { key: 'contextSwitches', label: 'Context switches', color: '#FF776D', max: switchMax },
+    ]);
+  }
 
-    const labels = data.results.map(r => r.algorithm);
-    if (cmpTimingChart) cmpTimingChart.destroy();
-    if (cmpUtilChart) cmpUtilChart.destroy();
-
-    cmpTimingChart = new Chart($('cmpTimingChart').getContext('2d'), {
-      type: 'bar',
-      data: {
-        labels,
-        datasets: [
-          { label: 'Avg Waiting',    data: data.results.map(r => r.metrics.avgWaiting),    backgroundColor: 'rgba(10,132,255,0.82)', borderRadius: 8 },
-          { label: 'Avg Turnaround', data: data.results.map(r => r.metrics.avgTurnaround), backgroundColor: 'rgba(191,90,242,0.82)', borderRadius: 8 },
-          { label: 'Avg Response',   data: data.results.map(r => r.metrics.avgResponse),   backgroundColor: 'rgba(255,159,10,0.82)', borderRadius: 8 }
-        ]
-      },
-      options: {
-        responsive: true, maintainAspectRatio: false,
-        plugins: { legend: { labels: { color: '#e5e7eb' } } },
-        scales: {
-          x: { ticks: { color: '#cbd5e1' }, grid: { display: false } },
-          y: { ticks: { color: '#94a3b8' }, grid: { color: 'rgba(255,255,255,0.08)' } }
-        }
-      }
-    });
-
-    cmpUtilChart = new Chart($('cmpUtilChart').getContext('2d'), {
-      type: 'bar',
-      data: {
-        labels,
-        datasets: [
-          { label: 'CPU Utilization (%)', data: data.results.map(r => r.metrics.cpuUtilization),  backgroundColor: 'rgba(48,209,88,0.82)',  borderRadius: 8 },
-          { label: 'Context Switches',    data: data.results.map(r => r.metrics.contextSwitches), backgroundColor: 'rgba(255,69,58,0.82)',  borderRadius: 8 }
-        ]
-      },
-      options: {
-        responsive: true, maintainAspectRatio: false,
-        plugins: { legend: { labels: { color: '#e5e7eb' } } },
-        scales: {
-          x: { ticks: { color: '#cbd5e1' }, grid: { display: false } },
-          y: { ticks: { color: '#94a3b8' }, grid: { color: 'rgba(255,255,255,0.08)' } }
-        }
-      }
-    });
+  function renderComparisonChart(container, results, series) {
+    $(container).innerHTML = `<div class="comparison-chart">${results.map(({ algorithm, metrics }) => `
+      <div class="comparison-group">
+        <strong>${escapeHtml(algorithm)}</strong>
+        ${series.map(({ key, label, color, max, suffix = '' }) => `
+          <div class="comparison-row">
+            <span>${label}</span>
+            <div class="comparison-track" aria-hidden="true">
+              <span style="width:${100 * metrics[key] / max}%;background:${color}"></span>
+            </div>
+            <output>${metrics[key]}${suffix}</output>
+          </div>`).join('')}
+      </div>`).join('')}</div>`;
   }
 
   $('compareAllBtn').addEventListener('click', compareAll);
@@ -1848,7 +1816,7 @@
   setInterval(pollLiveMetrics, 1000);
   setInterval(() => { if (activeTab === 'processes') fetchProcesses(); }, 4000);
   window.addEventListener('load', () => {
-    initLiveCharts();
+    renderHistoryCharts();
     runSimulation();
   });
 })();

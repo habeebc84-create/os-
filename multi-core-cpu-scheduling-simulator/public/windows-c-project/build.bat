@@ -1,4 +1,6 @@
 @echo off
+setlocal
+cd /d "%~dp0"
 echo ============================================================
 echo  Building Multi-Core CPU Scheduling Simulator (MinGW GCC)
 echo ============================================================
@@ -12,9 +14,10 @@ if %ERRORLEVEL% NEQ 0 (
 )
 
 echo.
-echo [SUCCESS] Built simulator.exe cleanly with zero errors!
+echo [SUCCESS] Built simulator.exe.
 echo.
 echo Run terminal verification test : simulator.exe --test
 echo Start web server and dashboard : simulator.exe
-echo Then open in browser           : http://localhost:8080
+echo Then open in browser           : http://127.0.0.1:8080
+echo Enable hosted connection       : simulator.exe --allow-hosted
 echo.
