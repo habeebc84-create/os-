@@ -168,7 +168,8 @@ export function runMultiCoreSimulation(
   algorithm: AlgorithmType,
   numCoresRaw: number,
   quantumRaw: number,
-  priorityMode: PriorityMode
+  priorityMode: PriorityMode,
+  includeTimeline = true
 ): SimResult {
   const numCores = clampInt(numCoresRaw, SIM_LIMITS.MIN_CORES, SIM_LIMITS.MAX_CORES, 2);
   const quantum = clampInt(quantumRaw, SIM_LIMITS.MIN_QUANTUM, SIM_LIMITS.MAX_QUANTUM, 3);
@@ -233,19 +234,18 @@ export function runMultiCoreSimulation(
     return bestPos;
   };
 
+  const lastSegments: (GanttSegment | undefined)[] = Array(numCores).fill(undefined);
   const recordGantt = (coreId: number, procIdx: number, t: number) => {
     const label = procIdx >= 0 ? procs[procIdx].pid : 'IDLE';
     const isIdle = procIdx < 0;
-    for (let i = segments.length - 1; i >= 0; i--) {
-      if (segments[i].core === coreId) {
-        if (segments[i].end === t && segments[i].idle === isIdle && segments[i].pid === label) {
-          segments[i].end = t + 1;
-          return;
-        }
-        break;
-      }
+    const last = lastSegments[coreId];
+    if (last && last.end === t && last.idle === isIdle && last.pid === label) {
+      last.end = t + 1;
+      return;
     }
-    segments.push({ core: coreId, pid: label, idle: isIdle, start: t, end: t + 1 });
+    const segment = { core: coreId, pid: label, idle: isIdle, start: t, end: t + 1 };
+    lastSegments[coreId] = segment;
+    segments.push(segment);
   };
 
   for (let t = 0; t <= SIM_LIMITS.MAX_SIM_TICKS; t++) {
@@ -332,15 +332,17 @@ export function runMultiCoreSimulation(
         cores[c].lastProc = p;
         if (procs[p].firstStart < 0) procs[p].firstStart = t;
       }
-      recordGantt(c, p, t);
+      if (includeTimeline) recordGantt(c, p, t);
     }
 
-    ticks.push({
-      tick: t,
-      completed: completedCount,
-      cores: cores.map((c) => (c.assignedProc >= 0 ? procs[c.assignedProc].pid : 'IDLE')),
-      readyQueue: readyQueue.map((i) => procs[i].pid),
-    });
+    if (includeTimeline) {
+      ticks.push({
+        tick: t,
+        completed: completedCount,
+        cores: cores.map((c) => (c.assignedProc >= 0 ? procs[c.assignedProc].pid : 'IDLE')),
+        readyQueue: readyQueue.map((i) => procs[i].pid),
+      });
+    }
 
     // 7. Execute 1 tick on each core
     for (let c = 0; c < numCores; c++) {
@@ -433,10 +435,11 @@ export function compareAllAlgorithms(
   inputs: ProcessInput[],
   cores: number,
   quantum: number,
-  priorityMode: PriorityMode
+  priorityMode: PriorityMode,
+  includeTimeline = true
 ): CompareResponse {
   const algs: AlgorithmType[] = ['FCFS', 'SJF', 'SRTF', 'Priority', 'Round Robin'];
-  const results = algs.map((alg) => runMultiCoreSimulation(inputs, alg, cores, quantum, priorityMode));
+  const results = algs.map((alg) => runMultiCoreSimulation(inputs, alg, cores, quantum, priorityMode, includeTimeline));
 
   let bestWt = 0,
     bestTat = 0,

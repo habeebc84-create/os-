@@ -8,6 +8,8 @@ import {
   Cpu,
   Download,
   ListTree,
+  Moon,
+  Sun,
   Pause,
   Play,
   Plus,
@@ -33,6 +35,8 @@ import {
   SimResult,
   validateProcessInput,
 } from './lib/schedulerEngine';
+import { runSchedulerJob } from './lib/runSchedulerJob';
+import { GanttTracks } from './components/GanttTracks';
 
 type TabKey = 'scheduler' | 'hardware' | 'processes' | 'analytics';
 
@@ -49,16 +53,6 @@ interface OSProcess {
   isNew?: boolean;
 }
 
-const PROC_GRADIENTS = [
-  'linear-gradient(135deg, #0A84FF, #38BDF8)',
-  'linear-gradient(135deg, #BF5AF2, #EC4899)',
-  'linear-gradient(135deg, #FF9F0A, #F97316)',
-  'linear-gradient(135deg, #30D158, #10B981)',
-  'linear-gradient(135deg, #FF453A, #F43F5E)',
-  'linear-gradient(135deg, #5E5CE6, #818CF8)',
-  'linear-gradient(135deg, #64D2FF, #06B6D4)',
-  'linear-gradient(135deg, #FFD60A, #F59E0B)',
-];
 const PROC_SOLID = ['#0A84FF', '#BF5AF2', '#FF9F0A', '#30D158', '#FF453A', '#5E5CE6', '#64D2FF', '#FFD60A'];
 
 const C_PROJECT_FILES = [
@@ -196,8 +190,8 @@ function LiveSparkChart({ data, stroke, gradientId }: { data: number[]; stroke: 
         const y = h - padY - (tick / 100) * plotH;
         return (
           <g key={tick}>
-            <line x1={padLeft} y1={y} x2={w - padRight} y2={y} stroke="rgba(255,255,255,0.08)" strokeDasharray="4 4" />
-            <text x={padLeft - 6} y={y + 3.5} textAnchor="end" fill="rgba(255,255,255,0.45)" fontSize="10" className="tabular-nums">
+            <line x1={padLeft} y1={y} x2={w - padRight} y2={y} stroke="var(--stroke)" strokeDasharray="4 4" />
+            <text x={padLeft - 6} y={y + 3.5} textAnchor="end" fill="var(--muted)" fontSize="10" className="tabular-nums">
               {tick}%
             </text>
           </g>
@@ -211,7 +205,27 @@ function LiveSparkChart({ data, stroke, gradientId }: { data: number[]; stroke: 
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<TabKey>('scheduler');
-  const [parallax, setParallax] = useState({ x: 0, y: 0 });
+  const showHardware = activeTab === 'hardware';
+  const showHardwareRef = useRef(showHardware);
+  useEffect(() => {
+    showHardwareRef.current = showHardware;
+  }, [showHardware]);
+  const [theme, setTheme] = useState(() => document.documentElement.dataset.theme === 'light' ? 'light' : 'dark');
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    document.querySelector('meta[name="theme-color"]')?.setAttribute('content', theme === 'light' ? '#f3f6fb' : '#101625');
+  }, [theme]);
+
+  const toggleTheme = () => {
+    const next = theme === 'dark' ? 'light' : 'dark';
+    setTheme(next);
+    try {
+      localStorage.setItem('cpu-simulator-theme', next);
+    } catch {
+      // The theme still works when storage is unavailable.
+    }
+  };
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const toastTimersRef = useRef<number[]>([]);
   const copyTimerRef = useRef<number | null>(null);
@@ -235,10 +249,12 @@ export default function App() {
     runMultiCoreSimulation(SAMPLE_WORKLOAD, 'FCFS', 2, 3, 'preemptive')
   );
   const [compareResult, setCompareResult] = useState<CompareResponse>(() =>
-    compareAllAlgorithms(SAMPLE_WORKLOAD, 2, 3, 'preemptive')
+    compareAllAlgorithms(SAMPLE_WORKLOAD, 2, 3, 'preemptive', false)
   );
   const [isSimulating, setIsSimulating] = useState(false);
   const [isComparing, setIsComparing] = useState(false);
+  const [compareError, setCompareError] = useState<string | null>(null);
+  const comparisonRequest = useRef(0);
 
   const workloadSignature = useMemo(
     () => JSON.stringify({ processes, cores, quantum, priorityMode }),
@@ -326,19 +342,6 @@ export default function App() {
     };
   }, []);
 
-  // Subtle mouse-move parallax for ambient orbs
-  useEffect(() => {
-    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
-    const onMove = (e: MouseEvent) => {
-      setParallax({
-        x: (e.clientX / window.innerWidth - 0.5) * 2,
-        y: (e.clientY / window.innerHeight - 0.5) * 2,
-      });
-    };
-    window.addEventListener('mousemove', onMove, { passive: true });
-    return () => window.removeEventListener('mousemove', onMove);
-  }, []);
-
   // Fetch hardware metadata from C11 backend when reachable
   const fetchHardwareInfo = useCallback(async () => {
     if (!canReachLocalBackend) return false;
@@ -379,13 +382,10 @@ export default function App() {
     };
 
     if (!canReachLocalBackend) {
-      backendConnectedRef.current = false;
-      setBackendConnected(false);
-      const previewTimer = window.setInterval(advancePreviewTelemetry, 1000);
-      return () => {
-        active = false;
-        window.clearInterval(previewTimer);
-      };
+      const previewTimer = window.setInterval(() => {
+        if (showHardwareRef.current && !document.hidden) advancePreviewTelemetry();
+      }, 1000);
+      return () => window.clearInterval(previewTimer);
     }
 
     fetchHardwareInfo().then((ok) => {
@@ -395,18 +395,20 @@ export default function App() {
     });
 
     const timer = window.setInterval(async () => {
-      if (inFlight) return;
+      if (inFlight || document.hidden) return;
       inFlight = true;
       try {
         const res = await fetchWithTimeout(`${backendBaseUrl}/api/live`, {}, 750);
         if (res.ok && active) {
           const m = await res.json();
+          if (!active) return;
           const wasConnected = backendConnectedRef.current;
           backendConnectedRef.current = true;
           setBackendConnected(true);
           if (!wasConnected) {
             fetchHardwareInfo();
           }
+          if (!showHardwareRef.current) return;
           const cpuPct = Number(m.cpuPercent) || 0;
           const ramPct = Number(m.ramPercent) || 0;
           liveCpuRef.current = cpuPct;
@@ -428,7 +430,7 @@ export default function App() {
       if (!active) return;
       backendConnectedRef.current = false;
       setBackendConnected(false);
-      advancePreviewTelemetry();
+      if (showHardwareRef.current) advancePreviewTelemetry();
     }, 1000);
 
     return () => {
@@ -551,12 +553,12 @@ export default function App() {
   }, [codeDrawerOpen]);
 
   const pidColorIndex = useMemo(() => {
-    const map: Record<string, number> = {};
+    const map: Record<string, number> = Object.create(null);
     processes.forEach((p, idx) => {
-      if (!(p.pid in map)) map[p.pid] = idx % PROC_GRADIENTS.length;
+      if (!(p.pid in map)) map[p.pid] = idx % PROC_SOLID.length;
     });
     simResult.processes.forEach((p, idx) => {
-      if (!(p.pid in map)) map[p.pid] = idx % PROC_GRADIENTS.length;
+      if (!(p.pid in map)) map[p.pid] = idx % PROC_SOLID.length;
     });
     return map;
   }, [processes, simResult]);
@@ -628,13 +630,18 @@ export default function App() {
         }
       }
 
-      const res = runMultiCoreSimulation(processes, algorithm, effectiveCores, effectiveQuantum, priorityMode);
+      const res = await runSchedulerJob({
+        kind: 'simulate',
+        args: [processes, algorithm, effectiveCores, effectiveQuantum, priorityMode],
+      });
       setSimResult(res);
       if (res.truncated) {
         pushToast(`Simulation reached ${SIM_LIMITS.MAX_SIM_TICKS} tick safety limit`, '#FF9F0A');
       } else {
         pushToast(`Simulation complete (${res.algorithm}, ${res.cores} cores)`, '#30D158');
       }
+    } catch {
+      pushToast('Simulation failed. Run it again to retry.', '#FF453A');
     } finally {
       setIsSimulating(false);
     }
@@ -646,6 +653,8 @@ export default function App() {
         if (!silent) pushToast('Add processes in the Simulator tab first', '#FF453A');
         return;
       }
+      const request = ++comparisonRequest.current;
+      setCompareError(null);
       setIsComparing(true);
       try {
         if (backendConnectedRef.current && canReachLocalBackend) {
@@ -661,6 +670,7 @@ export default function App() {
             );
             if (res.ok) {
               const data: CompareResponse = await res.json();
+              if (request !== comparisonRequest.current) return;
               setCompareResult(data);
               setLastComparedSignature(workloadSignature);
               if (!silent) pushToast('Compared all 5 scheduling algorithms (C11 backend)', '#BF5AF2');
@@ -670,12 +680,15 @@ export default function App() {
             // Fall back to local engine
           }
         }
-        const cmp = compareAllAlgorithms(processes, cores, quantum, priorityMode);
+        const cmp = await runSchedulerJob({ kind: 'compare', args: [processes, cores, quantum, priorityMode] });
+        if (request !== comparisonRequest.current) return;
         setCompareResult(cmp);
         setLastComparedSignature(workloadSignature);
         if (!silent) pushToast('Compared all 5 scheduling algorithms', '#BF5AF2');
+      } catch {
+        if (request === comparisonRequest.current) setCompareError('Comparison failed. Select Compare All Algorithms to retry.');
       } finally {
-        setIsComparing(false);
+        if (request === comparisonRequest.current) setIsComparing(false);
       }
     },
     [backendBaseUrl, canReachLocalBackend, cores, priorityMode, processes, pushToast, quantum, workloadSignature]
@@ -701,7 +714,9 @@ export default function App() {
     setIsPlaying(true);
     if (playProgressRef.current >= makespan) playProgressRef.current = 0;
     let lastTs = performance.now();
-    const speed = Math.max(2.2, Math.min(5.5, makespan / 5));
+    const speed = Math.max(2.2, makespan / 8);
+    let displayedTick = -1;
+    let lastPaint = -Infinity;
 
     const frame = (ts: number) => {
       const dt = Math.min(0.1, (ts - lastTs) / 1000);
@@ -714,7 +729,12 @@ export default function App() {
         pushToast('Gantt replay finished', '#64D2FF');
         return;
       }
-      setPlayTick(playProgressRef.current);
+      const tick = Math.floor(playProgressRef.current * 10) / 10;
+      if (tick !== displayedTick && ts - lastPaint >= 32) {
+        displayedTick = tick;
+        lastPaint = ts;
+        setPlayTick(tick);
+      }
       rafRef.current = requestAnimationFrame(frame);
     };
     rafRef.current = requestAnimationFrame(frame);
@@ -744,6 +764,10 @@ export default function App() {
   };
 
   const handleLoadSample = () => {
+    if (isSimulating) return;
+    comparisonRequest.current++;
+    setIsComparing(false);
+    setCompareError(null);
     resetReplayState();
     setFormError(null);
     setProcesses(SAMPLE_WORKLOAD);
@@ -753,7 +777,7 @@ export default function App() {
     setQuantumInput('3');
     setNewPid('P6');
     const res = runMultiCoreSimulation(SAMPLE_WORKLOAD, algorithm, 2, 3, priorityMode);
-    const cmp = compareAllAlgorithms(SAMPLE_WORKLOAD, 2, 3, priorityMode);
+    const cmp = compareAllAlgorithms(SAMPLE_WORKLOAD, 2, 3, priorityMode, false);
     setSimResult(res);
     setCompareResult(cmp);
     setLastComparedSignature(
@@ -763,6 +787,7 @@ export default function App() {
   };
 
   const handleRandomize = () => {
+    if (isSimulating) return;
     resetReplayState();
     setFormError(null);
     const count = 5 + Math.floor(Math.random() * 4);
@@ -782,6 +807,7 @@ export default function App() {
   };
 
   const handleClearProcesses = () => {
+    if (isSimulating) return;
     resetReplayState();
     setFormError(null);
     setProcesses([]);
@@ -789,15 +815,20 @@ export default function App() {
     pushToast('Process queue cleared', '#FF9F0A');
   };
 
-  const handleDownloadCsv = () => {
+  const handleDownloadCsv = async () => {
     if (!processes.length && !simResult.processes.length) {
       pushToast('Run a simulation first to export a CSV report', '#FF453A');
       return;
     }
-    const cmpForExport =
-      processes.length > 0 && lastComparedSignature !== workloadSignature
-        ? compareAllAlgorithms(processes, cores, quantum, priorityMode)
-        : compareResult;
+    let cmpForExport = compareResult;
+    try {
+      if (processes.length > 0 && lastComparedSignature !== workloadSignature) {
+        cmpForExport = await runSchedulerJob({ kind: 'compare', args: [processes, cores, quantum, priorityMode] });
+      }
+    } catch {
+      pushToast('Could not generate the CSV report. Please try again.', '#FF453A');
+      return;
+    }
     const csv = buildCsvReport(simResult, processes.length > 0 ? cmpForExport : null);
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
@@ -929,45 +960,17 @@ export default function App() {
     procSort.key === key ? (procSort.dir === 1 ? '↑' : '↓') : '↕';
 
   return (
-    <div className="relative min-h-screen text-white selection:bg-[#0A84FF]/40">
-      {/* Ambient Floating Orbs with Parallax */}
-      <div className="fixed inset-0 z-0 overflow-hidden pointer-events-none" aria-hidden="true">
-        <div
-          className="absolute -top-28 -left-20 w-[540px] h-[540px] rounded-full blur-[110px] opacity-40 orb-anim-1 transition-transform duration-500"
-          style={{
-            background: 'radial-gradient(circle, #0A84FF, transparent 70%)',
-            marginLeft: parallax.x * 18,
-            marginTop: parallax.y * 18,
-          }}
-        />
-        <div
-          className="absolute -bottom-36 left-[32%] w-[560px] h-[560px] rounded-full blur-[115px] opacity-40 orb-anim-2 transition-transform duration-500"
-          style={{
-            background: 'radial-gradient(circle, #BF5AF2, transparent 70%)',
-            marginLeft: parallax.x * 26,
-            marginTop: parallax.y * 26,
-          }}
-        />
-        <div
-          className="absolute top-[16%] -right-28 w-[480px] h-[480px] rounded-full blur-[110px] opacity-35 orb-anim-3 transition-transform duration-500"
-          style={{
-            background: 'radial-gradient(circle, #FF9F0A, transparent 70%)',
-            marginLeft: parallax.x * 14,
-            marginTop: parallax.y * 14,
-          }}
-        />
-      </div>
-
+    <div className="relative min-h-screen text-ink selection:bg-[#0A84FF]/40">
       {/* Main Responsive Shell */}
       <div className="relative z-10 max-w-[1600px] mx-auto p-3 sm:p-4 lg:p-5 grid grid-cols-1 lg:grid-cols-[268px_minmax(0,1fr)] gap-4 sm:gap-5 min-h-screen">
         {/* Floating Glass Sidebar */}
         <aside className="liquid-glass p-4 lg:sticky lg:top-5 lg:h-[calc(100vh-40px)] flex flex-col justify-between">
           <div>
-            <div className="px-3 pb-4 mb-4 border-b border-white/12">
-              <div className="text-[17px] font-extrabold tracking-tight bg-gradient-to-br from-white to-[#a8d4ff] bg-clip-text text-transparent">
+            <div className="px-3 pb-4 mb-4 border-b border-neutral-ui/12">
+              <div className="text-[17px] font-extrabold tracking-tight text-ink">
                 CoreOS Simulator
               </div>
-              <div className="text-xs text-white/60 mt-1">C11 Multi-Core Engine &amp; Monitor</div>
+              <div className="text-xs text-muted mt-1">C11 Multi-Core Engine &amp; Monitor</div>
             </div>
 
             <nav className="relative flex flex-row lg:flex-col gap-2 flex-wrap" aria-label="Primary Navigation">
@@ -989,12 +992,15 @@ export default function App() {
                   <button
                     key={item.key}
                     type="button"
-                    onClick={() => setActiveTab(item.key)}
+                    onClick={() => {
+                      if (item.key !== 'scheduler') stopReplay();
+                      setActiveTab(item.key);
+                    }}
                     aria-current={active ? 'page' : undefined}
                     className={`relative z-10 h-11 lg:h-12 px-3.5 rounded-2xl flex items-center gap-2.5 lg:gap-3 text-xs sm:text-sm font-semibold whitespace-nowrap shrink-0 cursor-pointer transition-all ${
                       active
-                        ? 'text-white lg:bg-transparent bg-gradient-to-r from-[#0A84FF]/40 to-[#BF5AF2]/35'
-                        : 'text-white/65 hover:text-white hover:translate-x-0.5'
+                        ? 'text-ink lg:bg-transparent bg-gradient-to-r from-[#0A84FF]/40 to-[#BF5AF2]/35'
+                        : 'text-muted hover:text-ink hover:translate-x-0.5'
                     }`}
                   >
                     {item.icon}
@@ -1009,16 +1015,16 @@ export default function App() {
             <button
               type="button"
               onClick={() => setCodeDrawerOpen(true)}
-              className="w-full h-11 px-4 rounded-full bg-white/10 hover:bg-white/16 border border-white/22 text-xs font-semibold text-white flex items-center justify-center gap-2 cursor-pointer spring-btn whitespace-nowrap"
+              className="w-full h-11 px-4 rounded-full bg-neutral-ui/10 hover:bg-neutral-ui/16 border border-neutral-ui/22 text-xs font-semibold text-ink flex items-center justify-center gap-2 cursor-pointer spring-btn whitespace-nowrap"
             >
-              <Code2 className="w-4 h-4 text-[#64D2FF]" />
+              <Code2 className="w-4 h-4 text-info" />
               <span>View Windows C11 Project (8 Files)</span>
             </button>
-            <div className="p-3.5 rounded-2xl bg-white/5 border border-white/10 text-xs text-white/65 leading-relaxed">
-              <div className="font-semibold text-white mb-1">Windows MinGW C11 Stack</div>
-              Winsock2 HTTP + Win32 Threads (<code className="text-[#64D2FF]">CreateThread</code>,{' '}
-              <code className="text-[#64D2FF]">CRITICAL_SECTION</code>,{' '}
-              <code className="text-[#64D2FF]">GetSystemTimes</code>).
+            <div className="p-3.5 rounded-2xl bg-neutral-ui/5 border border-neutral-ui/10 text-xs text-muted leading-relaxed">
+              <div className="font-semibold text-ink mb-1">Windows MinGW C11 Stack</div>
+              Winsock2 HTTP + Win32 Threads (<code className="text-info">CreateThread</code>,{' '}
+              <code className="text-info">CRITICAL_SECTION</code>,{' '}
+              <code className="text-info">GetSystemTimes</code>).
             </div>
           </div>
         </aside>
@@ -1031,15 +1037,21 @@ export default function App() {
               Multi-Core CPU Scheduling Simulator
             </div>
             <div className="flex items-center gap-2.5 sm:gap-3 flex-wrap">
+              <button type="button" onClick={toggleTheme}
+                aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
+                className="h-9 px-3 rounded-full bg-neutral-ui/8 hover:bg-neutral-ui/16 border border-neutral-ui/16 text-xs font-semibold inline-flex items-center gap-2 cursor-pointer">
+                {theme === 'dark' ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+                {theme === 'dark' ? 'Light' : 'Dark'}
+              </button>
               <button
                 type="button"
                 onClick={() => setCodeDrawerOpen(true)}
-                className="h-9 px-3.5 sm:px-4 rounded-full bg-white/10 hover:bg-white/18 border border-white/20 text-xs font-semibold flex items-center gap-2 cursor-pointer spring-btn whitespace-nowrap"
+                className="h-9 px-3.5 sm:px-4 rounded-full bg-neutral-ui/10 hover:bg-neutral-ui/18 border border-neutral-ui/20 text-xs font-semibold flex items-center gap-2 cursor-pointer spring-btn whitespace-nowrap"
               >
-                <Code2 className="w-3.5 h-3.5 text-[#64D2FF]" />
+                <Code2 className="w-3.5 h-3.5 text-info" />
                 <span>C11 Source Files</span>
               </button>
-              <div className="inline-flex items-center gap-2 px-3 sm:px-3.5 py-1.5 rounded-full bg-white/8 border border-white/16 text-xs font-semibold max-w-full">
+              <div className="inline-flex items-center gap-2 px-3 sm:px-3.5 py-1.5 rounded-full bg-neutral-ui/8 border border-neutral-ui/16 text-xs font-semibold max-w-full">
                 <span
                   className={`w-2.5 h-2.5 rounded-full shrink-0 ${
                     backendConnected
@@ -1061,59 +1073,51 @@ export default function App() {
           {/* ================= TAB 1: SCHEDULING SIMULATOR ================= */}
           {activeTab === 'scheduler' && (
             <div className="flex flex-col gap-5">
-              {/* Hero Card with 4 Animated Glowing Cores */}
+              {/* Simulation overview */}
               <div
-                className="liquid-glass liquid-card-hover p-5 sm:p-7 grid grid-cols-1 xl:grid-cols-[1.35fr_1fr] gap-6 items-center"
+                className="liquid-glass p-5 sm:p-7 grid grid-cols-1 xl:grid-cols-[1.35fr_1fr] gap-6 items-center"
                 style={{
                   background:
                     'linear-gradient(135deg, rgba(10,132,255,0.16) 0%, rgba(191,90,242,0.11) 55%, rgba(255,159,10,0.08) 100%)',
                 }}
               >
                 <div>
-                  <div className="text-xs font-bold tracking-[0.16em] uppercase text-[#64D2FF] mb-2">
+                  <div className="text-xs font-bold tracking-[0.16em] uppercase text-info mb-2">
                     Operating Systems · Multi-Core Engine
                   </div>
                   <h1 className="text-2xl sm:text-3xl lg:text-4xl font-extrabold tracking-tight leading-[1.12] mb-3">
                     Multi-Core CPU Scheduling Simulator
                   </h1>
-                  <p className="text-sm text-white/70 leading-relaxed max-w-[56ch]">
+                  <p className="text-sm text-muted leading-relaxed max-w-[56ch]">
                     Simulate FCFS, SJF, SRTF, Priority, and Round Robin across 1–8 CPU cores with real-time tick replay,
                     per-core utilization metrics, and exact Windows C11 thread synchronization.
                   </p>
                 </div>
                 <div className="grid grid-cols-2 gap-3">
-                  {[
-                    { label: 'CORE 0', color: '#64D2FF', border: 'rgba(100,210,255,0.45)', cls: 'core-seq-0' },
-                    { label: 'CORE 1', color: '#0A84FF', border: 'rgba(10,132,255,0.45)', cls: 'core-seq-1' },
-                    { label: 'CORE 2', color: '#FF9F0A', border: 'rgba(255,159,10,0.45)', cls: 'core-seq-2' },
-                    { label: 'CORE 3', color: '#BF5AF2', border: 'rgba(191,90,242,0.45)', cls: 'core-seq-3' },
-                  ].map((c) => (
-                    <div
-                      key={c.label}
-                      className={`p-3.5 rounded-2xl bg-[#0c1024]/60 border flex flex-col items-center gap-1.5 text-xs font-bold tracking-wider ${c.cls}`}
-                      style={{ color: c.color, borderColor: c.border }}
-                    >
-                      <Cpu className="w-7 h-7" />
-                      <span>{c.label}</span>
+                  {simResult.metrics.coreUtilization.slice(0, 4).map((core) => (
+                    <div key={core.core} className="p-3.5 rounded-xl panel-inset border border-neutral-ui/16 flex items-center justify-between gap-2 text-xs font-bold">
+                      <span className="flex items-center gap-1.5"><Cpu className="w-4 h-4" /> Core {core.core}</span>
+                      <span className="text-info tabular-nums">{core.utilization.toFixed(1)}%</span>
                     </div>
                   ))}
+                  {simResult.cores > 4 && <span className="col-span-2 text-xs text-muted">+{simResult.cores - 4} more cores</span>}
                 </div>
               </div>
 
               {/* Config & Process Builder */}
               <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">
-                <div className="liquid-glass liquid-card-hover p-5 sm:p-6">
+                <div className="liquid-glass p-5 sm:p-6">
                   <div className="mb-4">
                     <h2 className="text-[17px] font-bold">Simulation Parameters</h2>
-                    <p className="text-xs text-white/60 mt-0.5">Select algorithm, cores, quantum, and priority preemption</p>
+                    <p className="text-xs text-muted mt-0.5">Select algorithm, cores, quantum, and priority preemption</p>
                   </div>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <label className="block">
-                      <span className="text-xs font-semibold text-white/65 block mb-1.5">Algorithm</span>
+                      <span className="text-xs font-semibold text-muted block mb-1.5">Algorithm</span>
                       <select
                         value={algorithm}
                         onChange={(e) => setAlgorithm(e.target.value as AlgorithmType)}
-                        className="w-full h-11 px-3.5 rounded-2xl bg-[#0a0e1e]/70 border border-white/18 text-sm text-white outline-none focus:border-[#0A84FF] focus:ring-2 focus:ring-[#0A84FF]/35"
+                        className="w-full h-11 px-3.5 rounded-2xl panel-inset border border-neutral-ui/18 text-sm text-ink outline-none focus:border-[#0A84FF] focus:ring-2 focus:ring-[#0A84FF]/35"
                       >
                         <option value="FCFS">FCFS (Non-Preemptive)</option>
                         <option value="SJF">SJF (Non-Preemptive)</option>
@@ -1123,7 +1127,7 @@ export default function App() {
                       </select>
                     </label>
                     <label className="block">
-                      <span className="text-xs font-semibold text-white/65 block mb-1.5">CPU Cores (1–8)</span>
+                      <span className="text-xs font-semibold text-muted block mb-1.5">CPU Cores (1–8)</span>
                       <input
                         type="number"
                         min={SIM_LIMITS.MIN_CORES}
@@ -1137,11 +1141,11 @@ export default function App() {
                           }
                         }}
                         onBlur={(e) => commitCoresInput(e.target.value)}
-                        className="w-full h-11 px-3.5 rounded-2xl bg-[#0a0e1e]/70 border border-white/18 text-sm text-white tabular-nums outline-none focus:border-[#0A84FF] focus:ring-2 focus:ring-[#0A84FF]/35"
+                        className="w-full h-11 px-3.5 rounded-2xl panel-inset border border-neutral-ui/18 text-sm text-ink tabular-nums outline-none focus:border-[#0A84FF] focus:ring-2 focus:ring-[#0A84FF]/35"
                       />
                     </label>
                     <label className="block">
-                      <span className="text-xs font-semibold text-white/65 block mb-1.5">Time Quantum (1–50)</span>
+                      <span className="text-xs font-semibold text-muted block mb-1.5">Time Quantum (1–50)</span>
                       <input
                         type="number"
                         min={SIM_LIMITS.MIN_QUANTUM}
@@ -1155,15 +1159,15 @@ export default function App() {
                           }
                         }}
                         onBlur={(e) => commitQuantumInput(e.target.value)}
-                        className="w-full h-11 px-3.5 rounded-2xl bg-[#0a0e1e]/70 border border-white/18 text-sm text-white tabular-nums outline-none focus:border-[#0A84FF] focus:ring-2 focus:ring-[#0A84FF]/35"
+                        className="w-full h-11 px-3.5 rounded-2xl panel-inset border border-neutral-ui/18 text-sm text-ink tabular-nums outline-none focus:border-[#0A84FF] focus:ring-2 focus:ring-[#0A84FF]/35"
                       />
                     </label>
                     <label className="block">
-                      <span className="text-xs font-semibold text-white/65 block mb-1.5">Priority Mode</span>
+                      <span className="text-xs font-semibold text-muted block mb-1.5">Priority Mode</span>
                       <select
                         value={priorityMode}
                         onChange={(e) => setPriorityMode(e.target.value as PriorityMode)}
-                        className="w-full h-11 px-3.5 rounded-2xl bg-[#0a0e1e]/70 border border-white/18 text-sm text-white outline-none focus:border-[#0A84FF] focus:ring-2 focus:ring-[#0A84FF]/35"
+                        className="w-full h-11 px-3.5 rounded-2xl panel-inset border border-neutral-ui/18 text-sm text-ink outline-none focus:border-[#0A84FF] focus:ring-2 focus:ring-[#0A84FF]/35"
                       >
                         <option value="preemptive">Preemptive</option>
                         <option value="non-preemptive">Non-Preemptive</option>
@@ -1178,7 +1182,7 @@ export default function App() {
                       disabled={isSimulating || !processes.length}
                       className="h-11 px-5 rounded-full text-sm font-semibold text-white flex items-center gap-2 cursor-pointer spring-btn whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed"
                       style={{
-                        background: 'linear-gradient(135deg, #0A84FF 0%, #4e6bff 55%, #BF5AF2 100%)',
+                        background: 'var(--primary-action)',
                         boxShadow: '0 10px 26px rgba(10,132,255,0.42), inset 0 1px 1px rgba(255,255,255,0.45)',
                       }}
                     >
@@ -1188,36 +1192,38 @@ export default function App() {
                     <button
                       type="button"
                       onClick={handleLoadSample}
-                      className="h-11 px-4 rounded-full bg-white/10 hover:bg-white/18 border border-white/20 text-sm font-semibold flex items-center gap-2 cursor-pointer spring-btn whitespace-nowrap"
+                      disabled={isSimulating}
+                      className="h-11 px-4 rounded-full bg-neutral-ui/10 hover:bg-neutral-ui/18 border border-neutral-ui/20 text-sm font-semibold flex items-center gap-2 cursor-pointer spring-btn whitespace-nowrap"
                     >
-                      <Sparkles className="w-4 h-4 text-[#64D2FF]" />
+                      <Sparkles className="w-4 h-4 text-info" />
                       <span>Load Sample Data</span>
                     </button>
                     <button
                       type="button"
                       onClick={handleRandomize}
-                      className="h-11 px-4 rounded-full bg-white/10 hover:bg-white/18 border border-white/20 text-sm font-semibold flex items-center gap-2 cursor-pointer spring-btn whitespace-nowrap"
+                      disabled={isSimulating}
+                      className="h-11 px-4 rounded-full bg-neutral-ui/10 hover:bg-neutral-ui/18 border border-neutral-ui/20 text-sm font-semibold flex items-center gap-2 cursor-pointer spring-btn whitespace-nowrap"
                     >
-                      <Shuffle className="w-4 h-4 text-[#BF5AF2]" />
+                      <Shuffle className="w-4 h-4 text-accent" />
                       <span>Random Generator</span>
                     </button>
                   </div>
                 </div>
 
                 {/* Add / Manage Processes */}
-                <div className="liquid-glass liquid-card-hover p-5 sm:p-6">
+                <div className="liquid-glass p-5 sm:p-6">
                   <div className="mb-4 flex items-center justify-between gap-2">
                     <div>
                       <h2 className="text-[17px] font-bold">
                         Process Queue ({processes.length}/{SIM_LIMITS.MAX_PROCS})
                       </h2>
-                      <p className="text-xs text-white/60 mt-0.5">Lower priority number = higher urgency</p>
+                      <p className="text-xs text-muted mt-0.5">Lower priority number = higher urgency</p>
                     </div>
                     <button
                       type="button"
                       onClick={handleClearProcesses}
-                      disabled={!processes.length}
-                      className="h-8 px-3 rounded-full bg-white/8 hover:bg-white/16 border border-white/16 text-xs font-semibold cursor-pointer spring-btn disabled:opacity-45 disabled:cursor-not-allowed"
+                      disabled={isSimulating || !processes.length}
+                      className="h-8 px-3 rounded-full bg-neutral-ui/8 hover:bg-neutral-ui/16 border border-neutral-ui/16 text-xs font-semibold cursor-pointer spring-btn disabled:opacity-45 disabled:cursor-not-allowed"
                     >
                       Clear
                     </button>
@@ -1225,7 +1231,7 @@ export default function App() {
                   <form onSubmit={handleAddProcess}>
                     <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
                       <label className="block">
-                        <span className="text-[11px] font-semibold text-white/60 block mb-1">PID</span>
+                        <span className="text-[11px] font-semibold text-muted block mb-1">PID</span>
                         <input
                           value={newPid}
                           maxLength={SIM_LIMITS.PID_MAX_LEN}
@@ -1233,11 +1239,11 @@ export default function App() {
                             setNewPid(e.target.value);
                             if (formError) setFormError(null);
                           }}
-                          className="w-full h-10 px-3 rounded-xl bg-[#0a0e1e]/70 border border-white/18 text-sm text-white outline-none focus:border-[#0A84FF]"
+                          className="w-full h-10 px-3 rounded-xl panel-inset border border-neutral-ui/18 text-sm text-ink outline-none focus:border-[#0A84FF]"
                         />
                       </label>
                       <label className="block">
-                        <span className="text-[11px] font-semibold text-white/60 block mb-1">Arrival (0–500)</span>
+                        <span className="text-[11px] font-semibold text-muted block mb-1">Arrival (0–500)</span>
                         <input
                           type="number"
                           min={SIM_LIMITS.MIN_ARRIVAL}
@@ -1247,11 +1253,11 @@ export default function App() {
                             setNewArrival(e.target.value);
                             if (formError) setFormError(null);
                           }}
-                          className="w-full h-10 px-3 rounded-xl bg-[#0a0e1e]/70 border border-white/18 text-sm text-white tabular-nums outline-none focus:border-[#0A84FF]"
+                          className="w-full h-10 px-3 rounded-xl panel-inset border border-neutral-ui/18 text-sm text-ink tabular-nums outline-none focus:border-[#0A84FF]"
                         />
                       </label>
                       <label className="block">
-                        <span className="text-[11px] font-semibold text-white/60 block mb-1">Burst (1–200)</span>
+                        <span className="text-[11px] font-semibold text-muted block mb-1">Burst (1–200)</span>
                         <input
                           type="number"
                           min={SIM_LIMITS.MIN_BURST}
@@ -1261,11 +1267,11 @@ export default function App() {
                             setNewBurst(e.target.value);
                             if (formError) setFormError(null);
                           }}
-                          className="w-full h-10 px-3 rounded-xl bg-[#0a0e1e]/70 border border-white/18 text-sm text-white tabular-nums outline-none focus:border-[#0A84FF]"
+                          className="w-full h-10 px-3 rounded-xl panel-inset border border-neutral-ui/18 text-sm text-ink tabular-nums outline-none focus:border-[#0A84FF]"
                         />
                       </label>
                       <label className="block">
-                        <span className="text-[11px] font-semibold text-white/60 block mb-1">Priority (1–99)</span>
+                        <span className="text-[11px] font-semibold text-muted block mb-1">Priority (1–99)</span>
                         <input
                           type="number"
                           min={SIM_LIMITS.MIN_PRIORITY}
@@ -1275,12 +1281,12 @@ export default function App() {
                             setNewPriority(e.target.value);
                             if (formError) setFormError(null);
                           }}
-                          className="w-full h-10 px-3 rounded-xl bg-[#0a0e1e]/70 border border-white/18 text-sm text-white tabular-nums outline-none focus:border-[#0A84FF]"
+                          className="w-full h-10 px-3 rounded-xl panel-inset border border-neutral-ui/18 text-sm text-ink tabular-nums outline-none focus:border-[#0A84FF]"
                         />
                       </label>
                     </div>
                     {formError && (
-                      <p className="text-xs text-[#ff8f89] mt-2" role="alert">
+                      <p className="text-xs text-danger mt-2" role="alert">
                         {formError}
                       </p>
                     )}
@@ -1288,7 +1294,7 @@ export default function App() {
                       <button
                         type="submit"
                         disabled={processes.length >= SIM_LIMITS.MAX_PROCS}
-                        className="h-9 px-4 rounded-full bg-[#30D158]/25 hover:bg-[#30D158]/35 border border-[#30D158]/45 text-xs font-semibold text-white inline-flex items-center gap-1.5 cursor-pointer spring-btn disabled:opacity-45 disabled:cursor-not-allowed"
+                        className="h-9 px-4 rounded-full bg-[#30D158]/25 hover:bg-[#30D158]/35 border border-[#30D158]/45 text-xs font-semibold text-ink inline-flex items-center gap-1.5 cursor-pointer spring-btn disabled:opacity-45 disabled:cursor-not-allowed"
                       >
                         <Plus className="w-3.5 h-3.5" />
                         <span>Add Process</span>
@@ -1298,7 +1304,7 @@ export default function App() {
                   <div className="mt-3 max-h-[168px] overflow-y-auto overflow-x-auto">
                     <table className="w-full text-sm tabular-nums">
                       <thead>
-                        <tr className="text-left text-xs text-white/55 border-b border-white/12">
+                        <tr className="text-left text-xs text-muted border-b border-neutral-ui/12">
                           <th className="py-2 pr-2">PID</th>
                           <th className="py-2 px-2">Arrival</th>
                           <th className="py-2 px-2">Burst</th>
@@ -1308,7 +1314,7 @@ export default function App() {
                       </thead>
                       <tbody>
                         {processes.map((p, idx) => (
-                          <tr key={`${p.pid}-${idx}`} className="border-b border-white/6 hover:bg-white/5">
+                          <tr key={`${p.pid}-${idx}`} className="border-b border-neutral-ui/6 hover:bg-neutral-ui/5">
                             <td className="py-2 pr-2 font-semibold flex items-center gap-2">
                               <span
                                 className="w-2.5 h-2.5 rounded-full inline-block shrink-0"
@@ -1328,7 +1334,7 @@ export default function App() {
                                   setProcesses(next);
                                   setNewPid(getNextSuggestedPid(next));
                                 }}
-                                className="text-[#ff8f89] hover:text-[#FF453A] p-1 cursor-pointer"
+                                className="text-danger hover:text-danger p-1 cursor-pointer"
                                 title={`Remove ${p.pid}`}
                                 aria-label={`Remove process ${p.pid}`}
                               >
@@ -1339,7 +1345,7 @@ export default function App() {
                         ))}
                         {!processes.length && (
                           <tr>
-                            <td colSpan={5} className="py-5 text-center text-xs text-white/45">
+                            <td colSpan={5} className="py-5 text-center text-xs text-muted">
                               Queue is empty. Add processes or click Load Sample Data.
                             </td>
                           </tr>
@@ -1351,11 +1357,11 @@ export default function App() {
               </div>
 
               {/* Live Core Cards */}
-              <div className="liquid-glass liquid-card-hover p-5 sm:p-6">
+              <div className="liquid-glass p-5 sm:p-6">
                 <div className="flex items-center justify-between gap-4 flex-wrap mb-4">
                   <div>
                     <h2 className="text-[17px] font-bold">Live Multi-Core Execution Units</h2>
-                    <p className="text-xs text-white/65 mt-0.5 tabular-nums">
+                    <p className="text-xs text-muted mt-0.5 tabular-nums">
                       {activeSnap
                         ? activeSnap.finished
                           ? `Replay Complete (Tick ${activeSnap.tick}) · Ready Queue: Empty · Completed: ${activeSnap.completed}/${simResult.processes.length}`
@@ -1369,10 +1375,10 @@ export default function App() {
                     <button
                       type="button"
                       onClick={handleTogglePlay}
-                      disabled={!simResult.metrics.makespan}
+                      disabled={isSimulating || !simResult.metrics.makespan}
                       className="h-9 px-4 rounded-full text-xs font-semibold text-white flex items-center gap-1.5 cursor-pointer spring-btn disabled:opacity-45 disabled:cursor-not-allowed"
                       style={{
-                        background: 'linear-gradient(135deg, #0A84FF, #BF5AF2)',
+                        background: 'var(--primary-action)',
                         boxShadow: '0 6px 20px rgba(10,132,255,0.38)',
                       }}
                     >
@@ -1382,7 +1388,7 @@ export default function App() {
                     <button
                       type="button"
                       onClick={resetReplayState}
-                      className="h-9 px-3.5 rounded-full bg-white/10 hover:bg-white/18 border border-white/18 text-xs font-semibold flex items-center gap-1.5 cursor-pointer spring-btn"
+                      className="h-9 px-3.5 rounded-full bg-neutral-ui/10 hover:bg-neutral-ui/18 border border-neutral-ui/18 text-xs font-semibold flex items-center gap-1.5 cursor-pointer spring-btn"
                     >
                       <RotateCcw className="w-3.5 h-3.5" />
                       <span>Reset</span>
@@ -1397,13 +1403,13 @@ export default function App() {
                     return (
                       <div
                         key={c.core}
-                        className={`p-4 rounded-2xl bg-[#0c1024]/60 border transition-all duration-300 ${
-                          isBusy ? 'border-[#0A84FF]/65 core-busy-pulse' : 'border-white/12 opacity-60'
+                        className={`p-4 rounded-2xl panel-inset border ${
+                          isBusy ? 'border-[#0A84FF]/65' : 'border-neutral-ui/12 opacity-60'
                         }`}
                       >
-                        <div className="flex items-center justify-between text-xs font-bold text-white/65 mb-2">
+                        <div className="flex items-center justify-between text-xs font-bold text-muted mb-2">
                           <span>CORE {c.core}</span>
-                          <span className="text-[#64D2FF] tabular-nums">{c.utilization.toFixed(1)}%</span>
+                          <span className="text-info tabular-nums">{c.utilization.toFixed(1)}%</span>
                         </div>
                         <div
                           className="text-xl font-extrabold tracking-tight mb-2.5"
@@ -1412,13 +1418,13 @@ export default function App() {
                               livePid !== 'IDLE' && livePid !== 'ACTIVE'
                                 ? PROC_SOLID[pidColorIndex[livePid] ?? 0]
                                 : isBusy
-                                  ? '#ffffff'
-                                  : 'rgba(255,255,255,0.45)',
+                                  ? 'var(--ink)'
+                                  : 'var(--muted)',
                           }}
                         >
                           {livePid}
                         </div>
-                        <div className="h-1.5 rounded-full bg-white/10 overflow-hidden">
+                        <div className="h-1.5 rounded-full bg-neutral-ui/10 overflow-hidden">
                           <div
                             className="h-full rounded-full transition-all duration-500"
                             style={{
@@ -1427,7 +1433,7 @@ export default function App() {
                             }}
                           />
                         </div>
-                        <div className="text-[11px] text-white/45 mt-2 tabular-nums">
+                        <div className="text-[11px] text-muted mt-2 tabular-nums">
                           Busy {c.busyTime}t · Idle {c.idleTime}t
                         </div>
                       </div>
@@ -1437,101 +1443,39 @@ export default function App() {
               </div>
 
               {/* Multi-Core Gantt Chart */}
-              <div className="liquid-glass liquid-card-hover p-5 sm:p-6">
+              <div className="liquid-glass p-5 sm:p-6">
                 <div className="flex items-center justify-between gap-4 flex-wrap mb-4">
                   <div>
                     <h2 className="text-[17px] font-bold">Multi-Core Gantt Timeline</h2>
-                    <p className="text-xs text-white/60 mt-0.5">
+                    <p className="text-xs text-muted mt-0.5">
                       {simResult.algorithm}
                       {simResult.algorithm === 'Priority' ? ` (${simResult.priorityMode})` : ''} · {simResult.cores}{' '}
                       Cores · Makespan {simResult.metrics.makespan} ticks
                     </p>
                   </div>
-                  <div className="text-xs font-bold text-[#64D2FF] tabular-nums">
-                    Tick: {playTick !== null ? playTick.toFixed(1) : '0.0'} / {simResult.metrics.makespan}
+                  <div className="text-xs font-bold text-info tabular-nums">
+                    {isSimulating ? (
+                      <span role="status">Building timeline…</span>
+                    ) : (
+                      <>Tick: {playTick !== null ? playTick.toFixed(1) : '0.0'} / {simResult.metrics.makespan}</>
+                    )}
                   </div>
                 </div>
 
                 {simResult.metrics.makespan > 0 ? (
-                  <div className="overflow-x-auto pb-2">
+                  <div className="overflow-x-auto px-3 pb-2" tabIndex={0} role="region" aria-label="Scrollable Gantt timeline">
                     <div className="relative min-w-[660px]">
-                      {/* Moving Glowing Playhead */}
-                      {playTick !== null && simResult.metrics.makespan > 0 && (
-                        <div
-                          className="absolute top-0 bottom-7 w-[3px] rounded-full pointer-events-none z-20"
-                          style={{
-                            left: `calc(88px + (100% - 88px) * ${Math.min(1, playTick / simResult.metrics.makespan)})`,
-                            background: 'linear-gradient(180deg, #fff, #64D2FF, #0A84FF)',
-                            boxShadow: '0 0 18px #64D2FF, 0 0 32px #0A84FF',
-                          }}
-                        />
-                      )}
-
-                      {Array.from({ length: simResult.cores }, (_, c) => {
-                        const segs = simResult.gantt.filter((s) => s.core === c);
-                        const makespan = Math.max(1, simResult.metrics.makespan);
-                        return (
-                          <div key={c} className="grid grid-cols-[76px_1fr] items-center gap-3 mb-2.5">
-                            <div className="text-xs font-bold text-white/65 text-right">CORE {c}</div>
-                            <div className="relative h-11 rounded-2xl bg-white/5 border border-white/10 overflow-hidden">
-                              {segs.map((s, idx) => {
-                                const left = (s.start / makespan) * 100;
-                                const width = ((s.end - s.start) / makespan) * 100;
-                                const dimmed = playTick !== null && playTick < s.start;
-                                const lit = playTick !== null && playTick >= s.start && playTick < s.end && !s.idle;
-                                return (
-                                  <div
-                                    key={`${c}-${s.start}-${s.end}`}
-                                    title={`Core ${c} · ${s.pid} · [${s.start} → ${s.end}] (${s.end - s.start} ticks)`}
-                                    className={`absolute top-1 bottom-1 rounded-xl flex items-center justify-center text-xs font-bold px-1 overflow-hidden whitespace-nowrap gantt-grow transition-all ${
-                                      s.idle
-                                        ? 'gantt-idle-stripe text-white/40 border border-dashed border-white/15'
-                                        : 'text-white shadow-sm'
-                                    } ${dimmed ? 'opacity-20 saturate-50' : ''} ${
-                                      lit ? 'ring-2 ring-white shadow-[0_0_22px_rgba(255,255,255,0.6)] z-10' : ''
-                                    }`}
-                                    style={{
-                                      left: `${left}%`,
-                                      width: `${width}%`,
-                                      background: s.idle ? undefined : PROC_GRADIENTS[pidColorIndex[s.pid] ?? 0],
-                                      animationDelay: `${idx * 35}ms`,
-                                    }}
-                                  >
-                                    {s.pid}
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          </div>
-                        );
-                      })}
-
-                      {/* Time Axis */}
-                      <div className="grid grid-cols-[76px_1fr] gap-3 mt-1.5">
-                        <div />
-                        <div className="relative h-5 text-[11px] text-white/45 tabular-nums">
-                          {(() => {
-                            const ms = Math.max(1, simResult.metrics.makespan);
-                            const step = ms <= 20 ? 1 : Math.ceil(ms / 15);
-                            const marks: number[] = [];
-                            for (let t = 0; t <= ms; t += step) marks.push(t);
-                            if (marks[marks.length - 1] !== ms) marks.push(ms);
-                            return marks.map((t) => (
-                              <span
-                                key={t}
-                                className="absolute -translate-x-1/2"
-                                style={{ left: `${(t / ms) * 100}%` }}
-                              >
-                                {t}
-                              </span>
-                            ));
-                          })()}
+                      <GanttTracks result={simResult} colors={PROC_SOLID} colorIndex={pidColorIndex} />
+                      {playTick !== null && (
+                        <div className="absolute left-[88px] right-0 top-0 bottom-7 pointer-events-none z-20" aria-hidden="true">
+                          <div className="timeline-playhead absolute inset-y-0 w-0.5 -translate-x-1/2"
+                            style={{ left: `${(playTick / simResult.metrics.makespan) * 100}%` }} />
                         </div>
-                      </div>
+                      )}
                     </div>
                   </div>
                 ) : (
-                  <div className="py-8 text-center text-xs text-white/50">
+                  <div className="py-8 text-center text-xs text-muted">
                     No timeline data yet. Add processes and click Run Simulation.
                   </div>
                 )}
@@ -1550,23 +1494,23 @@ export default function App() {
                   { label: 'Makespan', val: simResult.metrics.makespan, dec: 0, suf: '', hint: 'Total ticks elapsed' },
                 ].map((k) => (
                   <div key={k.label} className="liquid-glass p-4 rounded-2xl">
-                    <div className="text-xs font-semibold text-white/60 mb-1">{k.label}</div>
+                    <div className="text-xs font-semibold text-muted mb-1">{k.label}</div>
                     <div className="text-2xl font-extrabold tracking-tight">
                       <AnimatedNumber value={k.val} decimals={k.dec} suffix={k.suf} />
                     </div>
-                    <div className="text-[11px] text-white/45 mt-1">{k.hint}</div>
+                    <div className="text-[11px] text-muted mt-1">{k.hint}</div>
                   </div>
                 ))}
               </div>
 
               {/* Per-Process Results Table */}
-              <div className="liquid-glass liquid-card-hover p-5 sm:p-6">
+              <div className="liquid-glass p-5 sm:p-6">
                 <h2 className="text-[17px] font-bold mb-1">Per-Process Scheduling Metrics</h2>
-                <p className="text-xs text-white/60 mb-4">Exact Module 3 timing formulas</p>
+                <p className="text-xs text-muted mb-4">Exact Module 3 timing formulas</p>
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm tabular-nums">
                     <thead>
-                      <tr className="text-left text-xs text-white/60 border-b border-white/14">
+                      <tr className="text-left text-xs text-muted border-b border-neutral-ui/14">
                         <th className="py-2.5 pr-3">PID</th>
                         <th className="py-2.5 px-3">Arrival</th>
                         <th className="py-2.5 px-3">Burst</th>
@@ -1580,7 +1524,7 @@ export default function App() {
                     </thead>
                     <tbody>
                       {simResult.processes.map((p, idx) => (
-                        <tr key={`${p.pid}-${idx}`} className="border-b border-white/6 hover:bg-white/5">
+                        <tr key={`${p.pid}-${idx}`} className="border-b border-neutral-ui/6 hover:bg-neutral-ui/5">
                           <td className="py-2.5 pr-3 font-bold flex items-center gap-2">
                             <span
                               className="w-2.5 h-2.5 rounded-full shrink-0"
@@ -1593,14 +1537,14 @@ export default function App() {
                           <td className="py-2.5 px-3">{p.priority}</td>
                           <td className="py-2.5 px-3">{p.firstStart >= 0 ? p.firstStart : '—'}</td>
                           <td className="py-2.5 px-3">{p.completion}</td>
-                          <td className="py-2.5 px-3 font-bold text-[#64D2FF]">{p.turnaround}</td>
+                          <td className="py-2.5 px-3 font-bold text-info">{p.turnaround}</td>
                           <td className="py-2.5 px-3">{p.waiting}</td>
                           <td className="py-2.5 pl-3">{p.response}</td>
                         </tr>
                       ))}
                       {!simResult.processes.length && (
                         <tr>
-                          <td colSpan={9} className="py-6 text-center text-xs text-white/45">
+                          <td colSpan={9} className="py-6 text-center text-xs text-muted">
                             No simulation results yet.
                           </td>
                         </tr>
@@ -1616,25 +1560,25 @@ export default function App() {
           {activeTab === 'hardware' && (
             <div className="flex flex-col gap-5">
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <div className="liquid-glass liquid-card-hover p-5">
-                  <div className="text-xs font-semibold text-white/60">Processor Model (Win32 Registry)</div>
+                <div className="liquid-glass p-5">
+                  <div className="text-xs font-semibold text-muted">Processor Model (Win32 Registry)</div>
                   <div className="text-base font-bold mt-2 leading-snug">{hwInfo.cpuModel}</div>
                 </div>
-                <div className="liquid-glass liquid-card-hover p-5">
-                  <div className="text-xs font-semibold text-white/60">Physical Cores</div>
+                <div className="liquid-glass p-5">
+                  <div className="text-xs font-semibold text-muted">Physical Cores</div>
                   <div className="text-3xl font-extrabold mt-1 tabular-nums">{hwInfo.physicalCores}</div>
-                  <div className="text-[11px] text-white/45 mt-1">GetLogicalProcessorInformation</div>
+                  <div className="text-[11px] text-muted mt-1">GetLogicalProcessorInformation</div>
                 </div>
-                <div className="liquid-glass liquid-card-hover p-5">
-                  <div className="text-xs font-semibold text-white/60">Logical Processors</div>
+                <div className="liquid-glass p-5">
+                  <div className="text-xs font-semibold text-muted">Logical Processors</div>
                   <div className="text-3xl font-extrabold mt-1 tabular-nums">{hwInfo.logicalProcessors}</div>
-                  <div className="text-[11px] text-white/45 mt-1">Hardware execution threads</div>
+                  <div className="text-[11px] text-muted mt-1">Hardware execution threads</div>
                 </div>
               </div>
 
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
                 {/* Circular CPU Gauge */}
-                <div className="liquid-glass liquid-card-hover p-5 sm:p-6 flex items-center gap-6 flex-wrap">
+                <div className="liquid-glass p-5 sm:p-6 flex items-center gap-6 flex-wrap">
                   <div className="relative w-36 h-36 shrink-0">
                     <svg className="w-36 h-36 -rotate-90" viewBox="0 0 140 140" role="img" aria-label={`CPU load ${liveCpu.toFixed(1)} percent`}>
                       <defs>
@@ -1643,7 +1587,7 @@ export default function App() {
                           <stop offset="100%" stopColor="#64D2FF" />
                         </linearGradient>
                       </defs>
-                      <circle cx="70" cy="70" r="56" fill="none" stroke="rgba(255,255,255,0.1)" strokeWidth="12" />
+                      <circle cx="70" cy="70" r="56" fill="none" stroke="var(--stroke)" strokeWidth="12" />
                       <circle
                         cx="70"
                         cy="70"
@@ -1661,20 +1605,20 @@ export default function App() {
                       <div className="text-2xl font-extrabold">
                         <AnimatedNumber value={liveCpu} decimals={1} suffix="%" />
                       </div>
-                      <div className="text-[11px] text-white/60 font-semibold">CPU Load</div>
+                      <div className="text-[11px] text-muted font-semibold">CPU Load</div>
                     </div>
                   </div>
                   <div className="flex-1 min-w-[180px]">
                     <h3 className="text-base font-bold">Live System CPU Utilization</h3>
-                    <p className="text-xs text-white/65 mt-1.5 leading-relaxed">
-                      Calculated every 1 second via Windows <code className="text-[#64D2FF]">GetSystemTimes</code> delta
+                    <p className="text-xs text-muted mt-1.5 leading-relaxed">
+                      Calculated every 1 second via Windows <code className="text-info">GetSystemTimes</code> delta
                       across idle, kernel, and user time counters.
                     </p>
                   </div>
                 </div>
 
                 {/* Circular RAM Gauge */}
-                <div className="liquid-glass liquid-card-hover p-5 sm:p-6 flex items-center gap-6 flex-wrap">
+                <div className="liquid-glass p-5 sm:p-6 flex items-center gap-6 flex-wrap">
                   <div className="relative w-36 h-36 shrink-0">
                     <svg className="w-36 h-36 -rotate-90" viewBox="0 0 140 140" role="img" aria-label={`RAM usage ${liveRamPct.toFixed(1)} percent`}>
                       <defs>
@@ -1683,7 +1627,7 @@ export default function App() {
                           <stop offset="100%" stopColor="#FF9F0A" />
                         </linearGradient>
                       </defs>
-                      <circle cx="70" cy="70" r="56" fill="none" stroke="rgba(255,255,255,0.1)" strokeWidth="12" />
+                      <circle cx="70" cy="70" r="56" fill="none" stroke="var(--stroke)" strokeWidth="12" />
                       <circle
                         cx="70"
                         cy="70"
@@ -1701,30 +1645,30 @@ export default function App() {
                       <div className="text-2xl font-extrabold">
                         <AnimatedNumber value={liveRamPct} decimals={1} suffix="%" />
                       </div>
-                      <div className="text-[11px] text-white/60 font-semibold">Memory</div>
+                      <div className="text-[11px] text-muted font-semibold">Memory</div>
                     </div>
                   </div>
                   <div className="flex-1 min-w-[180px]">
                     <h3 className="text-base font-bold">Live Physical Memory (RAM)</h3>
-                    <div className="text-sm font-semibold text-white mt-1.5 tabular-nums">
+                    <div className="text-sm font-semibold text-ink mt-1.5 tabular-nums">
                       {liveRamUsedGB.toFixed(2)} GB / {liveRamTotalGB.toFixed(2)} GB used
                     </div>
-                    <p className="text-xs text-white/60 mt-1">
-                      Observed via Windows <code className="text-[#BF5AF2]">GlobalMemoryStatusEx</code>.
+                    <p className="text-xs text-muted mt-1">
+                      Observed via Windows <code className="text-accent">GlobalMemoryStatusEx</code>.
                     </p>
                   </div>
                 </div>
               </div>
 
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-                <div className="liquid-glass liquid-card-hover p-5 sm:p-6">
+                <div className="liquid-glass p-5 sm:p-6">
                   <h3 className="text-base font-bold mb-1">CPU Utilization — Last 60 Seconds</h3>
-                  <p className="text-xs text-white/55 mb-4">1 Hz live rolling window</p>
+                  <p className="text-xs text-muted mb-4">1 Hz live rolling window</p>
                   <LiveSparkChart data={cpuSeries} stroke="#0A84FF" gradientId="cpuAreaFill" />
                 </div>
-                <div className="liquid-glass liquid-card-hover p-5 sm:p-6">
+                <div className="liquid-glass p-5 sm:p-6">
                   <h3 className="text-base font-bold mb-1">RAM Utilization — Last 60 Seconds</h3>
-                  <p className="text-xs text-white/55 mb-4">1 Hz live rolling window</p>
+                  <p className="text-xs text-muted mb-4">1 Hz live rolling window</p>
                   <LiveSparkChart data={ramSeries} stroke="#BF5AF2" gradientId="ramAreaFill" />
                 </div>
               </div>
@@ -1734,24 +1678,24 @@ export default function App() {
           {/* ================= TAB 3: PROCESS MONITOR ================= */}
           {activeTab === 'processes' && (
             <div className="flex flex-col gap-5">
-              <div className="liquid-glass liquid-card-hover p-5 sm:p-6">
+              <div className="liquid-glass p-5 sm:p-6">
                 <div className="flex items-center justify-between gap-4 flex-wrap mb-4">
                   <div>
                     <h2 className="text-[17px] font-bold">Approved Application Launcher (Hardcoded Whitelist)</h2>
-                    <p className="text-xs text-white/60 mt-0.5">
-                      Spawns only verified executables via <code className="text-[#64D2FF]">CreateProcessA</code> + optional{' '}
-                      <code className="text-[#BF5AF2]">SetProcessAffinityMask</code>
+                    <p className="text-xs text-muted mt-0.5">
+                      Spawns only verified executables via <code className="text-info">CreateProcessA</code> + optional{' '}
+                      <code className="text-accent">SetProcessAffinityMask</code>
                     </p>
                   </div>
                   <div className="flex items-center gap-2.5">
-                    <label htmlFor="pinCoreSelect" className="text-xs font-semibold text-white/65">
+                    <label htmlFor="pinCoreSelect" className="text-xs font-semibold text-muted">
                       Pin to Core:
                     </label>
                     <select
                       id="pinCoreSelect"
                       value={pinCore}
                       onChange={(e) => setPinCore(Number(e.target.value))}
-                      className="h-9 px-3 rounded-xl bg-[#0a0e1e]/75 border border-white/18 text-xs text-white outline-none focus:border-[#0A84FF]"
+                      className="h-9 px-3 rounded-xl panel-inset border border-neutral-ui/18 text-xs text-ink outline-none focus:border-[#0A84FF]"
                     >
                       <option value={-1}>OS Default (Auto)</option>
                       {Array.from({ length: Math.min(32, Math.max(1, hwInfo.logicalProcessors)) }, (_, i) => (
@@ -1767,7 +1711,7 @@ export default function App() {
                     type="button"
                     disabled={launchingApp !== null}
                     onClick={() => handleLaunchApp('chrome')}
-                    className="h-10 px-5 rounded-full text-xs font-semibold text-white cursor-pointer spring-btn disabled:opacity-55 disabled:cursor-not-allowed"
+                    className="h-10 px-5 rounded-full text-xs font-semibold text-ink cursor-pointer spring-btn disabled:opacity-55 disabled:cursor-not-allowed"
                     style={{ background: 'linear-gradient(135deg, #0A84FF, #38BDF8)' }}
                   >
                     {launchingApp === 'chrome' ? 'Launching...' : 'Launch Chrome'}
@@ -1776,7 +1720,7 @@ export default function App() {
                     type="button"
                     disabled={launchingApp !== null}
                     onClick={() => handleLaunchApp('vscode')}
-                    className="h-10 px-5 rounded-full text-xs font-semibold text-white cursor-pointer spring-btn disabled:opacity-55 disabled:cursor-not-allowed"
+                    className="h-10 px-5 rounded-full text-xs font-semibold text-ink cursor-pointer spring-btn disabled:opacity-55 disabled:cursor-not-allowed"
                     style={{ background: 'linear-gradient(135deg, #5E5CE6, #BF5AF2)' }}
                   >
                     {launchingApp === 'vscode' ? 'Launching...' : 'Launch VS Code'}
@@ -1785,7 +1729,7 @@ export default function App() {
                     type="button"
                     disabled={launchingApp !== null}
                     onClick={() => handleLaunchApp('notepad')}
-                    className="h-10 px-5 rounded-full bg-[#30D158]/25 border border-[#30D158]/45 text-xs font-semibold text-white cursor-pointer spring-btn disabled:opacity-55 disabled:cursor-not-allowed"
+                    className="h-10 px-5 rounded-full bg-[#30D158]/25 border border-[#30D158]/45 text-xs font-semibold text-ink cursor-pointer spring-btn disabled:opacity-55 disabled:cursor-not-allowed"
                   >
                     {launchingApp === 'notepad' ? 'Launching...' : 'Launch Notepad'}
                   </button>
@@ -1793,39 +1737,39 @@ export default function App() {
                     type="button"
                     disabled={launchingApp !== null}
                     onClick={() => handleLaunchApp('calculator')}
-                    className="h-10 px-5 rounded-full bg-[#FF9F0A]/25 border border-[#FF9F0A]/45 text-xs font-semibold text-white cursor-pointer spring-btn disabled:opacity-55 disabled:cursor-not-allowed"
+                    className="h-10 px-5 rounded-full bg-[#FF9F0A]/25 border border-[#FF9F0A]/45 text-xs font-semibold text-ink cursor-pointer spring-btn disabled:opacity-55 disabled:cursor-not-allowed"
                   >
                     {launchingApp === 'calculator' ? 'Launching...' : 'Launch Calculator'}
                   </button>
                 </div>
               </div>
 
-              <div className="liquid-glass liquid-card-hover p-5 sm:p-6">
+              <div className="liquid-glass p-5 sm:p-6">
                 <div className="flex items-center justify-between gap-4 flex-wrap mb-4">
                   <div>
                     <h2 className="text-[17px] font-bold">
                       Running Windows Processes (<span className="tabular-nums">{filteredOsProcs.length}</span>)
                     </h2>
-                    <p className="text-xs text-white/60 mt-0.5">
+                    <p className="text-xs text-muted mt-0.5">
                       Toolhelp32Snapshot + GetProcessMemoryInfo (click columns to sort)
                     </p>
                   </div>
                   <div className="flex items-center gap-2.5 flex-wrap w-full sm:w-auto">
                     <div className="relative flex-1 sm:flex-initial">
-                      <Search className="w-4 h-4 text-white/45 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                      <Search className="w-4 h-4 text-muted absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
                       <input
                         value={procSearch}
                         onChange={(e) => setProcSearch(e.target.value)}
                         placeholder="Search process or PID..."
                         aria-label="Search process or PID"
-                        className="h-9 pl-9 pr-8 rounded-full bg-[#0a0e1e]/75 border border-white/18 text-xs text-white outline-none focus:border-[#0A84FF] w-full sm:w-56"
+                        className="h-9 pl-9 pr-8 rounded-full panel-inset border border-neutral-ui/18 text-xs text-ink outline-none focus:border-[#0A84FF] w-full sm:w-56"
                       />
                       {procSearch && (
                         <button
                           type="button"
                           onClick={() => setProcSearch('')}
                           aria-label="Clear search"
-                          className="absolute right-2.5 top-1/2 -translate-y-1/2 text-white/50 hover:text-white cursor-pointer"
+                          className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted hover:text-ink cursor-pointer"
                         >
                           <X className="w-3.5 h-3.5" />
                         </button>
@@ -1835,7 +1779,7 @@ export default function App() {
                       type="button"
                       disabled={isRefreshingProcs}
                       onClick={() => fetchOsProcesses(true)}
-                      className="h-9 px-3.5 rounded-full bg-white/10 hover:bg-white/18 border border-white/18 text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer spring-btn disabled:opacity-60"
+                      className="h-9 px-3.5 rounded-full bg-neutral-ui/10 hover:bg-neutral-ui/18 border border-neutral-ui/18 text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer spring-btn disabled:opacity-60"
                     >
                       <RefreshCw className={`w-3.5 h-3.5 ${isRefreshingProcs ? 'animate-spin' : ''}`} />
                       <span>{isRefreshingProcs ? 'Refreshing...' : 'Refresh'}</span>
@@ -1846,12 +1790,12 @@ export default function App() {
                 <div className="overflow-x-auto max-h-[420px]">
                   <table className="w-full text-sm tabular-nums">
                     <thead>
-                      <tr className="text-left text-xs text-white/60 border-b border-white/14">
+                      <tr className="text-left text-xs text-muted border-b border-neutral-ui/14">
                         <th
                           onClick={() =>
                             setProcSort((s) => ({ key: 'name', dir: s.key === 'name' ? (s.dir === 1 ? -1 : 1) : 1 }))
                           }
-                          className="py-2.5 pr-4 cursor-pointer hover:text-white select-none"
+                          className="py-2.5 pr-4 cursor-pointer hover:text-ink select-none"
                         >
                           Process Name {sortArrow('name')}
                         </th>
@@ -1859,7 +1803,7 @@ export default function App() {
                           onClick={() =>
                             setProcSort((s) => ({ key: 'pid', dir: s.key === 'pid' ? (s.dir === 1 ? -1 : 1) : 1 }))
                           }
-                          className="py-2.5 px-4 cursor-pointer hover:text-white select-none"
+                          className="py-2.5 px-4 cursor-pointer hover:text-ink select-none"
                         >
                           PID {sortArrow('pid')}
                         </th>
@@ -1870,7 +1814,7 @@ export default function App() {
                               dir: s.key === 'memoryMB' ? (s.dir === 1 ? -1 : 1) : -1,
                             }))
                           }
-                          className="py-2.5 pl-4 cursor-pointer hover:text-white select-none"
+                          className="py-2.5 pl-4 cursor-pointer hover:text-ink select-none"
                         >
                           Working Set Memory (MB) {sortArrow('memoryMB')}
                         </th>
@@ -1880,18 +1824,18 @@ export default function App() {
                       {filteredOsProcs.map((p) => (
                         <tr
                           key={`${p.pid}-${p.name}`}
-                          className={`border-b border-white/6 hover:bg-white/5 transition-colors ${
+                          className={`border-b border-neutral-ui/6 hover:bg-neutral-ui/5 transition-colors ${
                             p.isNew ? 'bg-[#30D158]/15' : ''
                           }`}
                         >
                           <td className="py-2.5 pr-4 font-semibold">{p.name}</td>
-                          <td className="py-2.5 px-4 text-white/75">{p.pid}</td>
+                          <td className="py-2.5 px-4 text-ink">{p.pid}</td>
                           <td className="py-2.5 pl-4 font-medium">{p.memoryMB.toFixed(2)} MB</td>
                         </tr>
                       ))}
                       {!filteredOsProcs.length && (
                         <tr>
-                          <td colSpan={3} className="py-8 text-center text-xs text-white/45">
+                          <td colSpan={3} className="py-8 text-center text-xs text-muted">
                             No matching processes found for &ldquo;{procSearch}&rdquo;.
                           </td>
                         </tr>
@@ -1906,10 +1850,10 @@ export default function App() {
           {/* ================= TAB 4: PERFORMANCE ANALYTICS ================= */}
           {activeTab === 'analytics' && (
             <div className="flex flex-col gap-5">
-              <div className="liquid-glass liquid-card-hover p-5 sm:p-6 flex items-center justify-between gap-4 flex-wrap">
+              <div className="liquid-glass p-5 sm:p-6 flex items-center justify-between gap-4 flex-wrap">
                 <div>
                   <h2 className="text-[17px] font-bold">Multi-Algorithm Comparative Analysis</h2>
-                  <p className="text-xs text-white/60 mt-0.5">
+                  <p className="text-xs text-muted mt-0.5">
                     Runs all 5 scheduling algorithms on the identical workload ({processes.length} processes, {cores} cores, Q=
                     {quantum}, {priorityMode})
                   </p>
@@ -1921,7 +1865,7 @@ export default function App() {
                     onClick={() => executeCompareAll(false)}
                     className="h-10 px-5 rounded-full text-xs font-semibold text-white cursor-pointer spring-btn disabled:opacity-45 disabled:cursor-not-allowed"
                     style={{
-                      background: 'linear-gradient(135deg, #0A84FF, #BF5AF2)',
+                      background: 'var(--primary-action)',
                       boxShadow: '0 8px 24px rgba(10,132,255,0.4)',
                     }}
                   >
@@ -1931,7 +1875,7 @@ export default function App() {
                     type="button"
                     disabled={!processes.length && !simResult.processes.length}
                     onClick={handleDownloadCsv}
-                    className="h-10 px-5 rounded-full bg-[#30D158]/25 hover:bg-[#30D158]/35 border border-[#30D158]/45 text-xs font-semibold text-white inline-flex items-center gap-2 cursor-pointer spring-btn disabled:opacity-45 disabled:cursor-not-allowed"
+                    className="h-10 px-5 rounded-full bg-[#30D158]/25 hover:bg-[#30D158]/35 border border-[#30D158]/45 text-xs font-semibold text-ink inline-flex items-center gap-2 cursor-pointer spring-btn disabled:opacity-45 disabled:cursor-not-allowed"
                   >
                     <Download className="w-4 h-4" />
                     <span>Download CSV Report</span>
@@ -1941,8 +1885,8 @@ export default function App() {
 
               {!processes.length ? (
                 <div className="liquid-glass p-8 text-center space-y-3">
-                  <p className="text-sm font-semibold text-white/80">Process queue is currently empty</p>
-                  <p className="text-xs text-white/55">
+                  <p className="text-sm font-semibold text-ink">Process queue is currently empty</p>
+                  <p className="text-xs text-muted">
                     Add processes in the Scheduling Simulator tab or load sample data to compare all 5 algorithms.
                   </p>
                   <button
@@ -1951,21 +1895,25 @@ export default function App() {
                       handleLoadSample();
                       setActiveTab('analytics');
                     }}
-                    className="h-9 px-4 rounded-full bg-white/12 hover:bg-white/20 border border-white/20 text-xs font-semibold inline-flex items-center gap-2 cursor-pointer spring-btn"
+                    className="h-9 px-4 rounded-full bg-neutral-ui/12 hover:bg-neutral-ui/20 border border-neutral-ui/20 text-xs font-semibold inline-flex items-center gap-2 cursor-pointer spring-btn"
                   >
-                    <Sparkles className="w-3.5 h-3.5 text-[#64D2FF]" />
+                    <Sparkles className="w-3.5 h-3.5 text-info" />
                     <span>Load Sample Workload</span>
                   </button>
                 </div>
+              ) : compareError ? (
+                <div className="liquid-glass p-6 text-sm" role="alert">{compareError}</div>
+              ) : isComparing || lastComparedSignature !== workloadSignature ? (
+                <div className="liquid-glass p-6 text-sm" role="status">Comparing scheduling algorithms…</div>
               ) : (
                 <>
-                  <div className="liquid-glass liquid-card-hover p-5 sm:p-6">
+                  <div className="liquid-glass p-5 sm:p-6">
                     <h3 className="text-base font-bold mb-1">Comparative Metrics Matrix</h3>
-                    <p className="text-xs text-white/60 mb-4">Best algorithm for each metric is highlighted in green</p>
+                    <p className="text-xs text-muted mb-4">Best algorithm for each metric is highlighted in green</p>
                     <div className="overflow-x-auto">
                       <table className="w-full text-sm tabular-nums">
                         <thead>
-                          <tr className="text-left text-xs text-white/60 border-b border-white/14">
+                          <tr className="text-left text-xs text-muted border-b border-neutral-ui/14">
                             <th className="py-2.5 pr-3">Algorithm</th>
                             <th className="py-2.5 px-3">Avg Waiting ↓</th>
                             <th className="py-2.5 px-3">Avg Turnaround ↓</th>
@@ -1981,22 +1929,22 @@ export default function App() {
                             const m = r.metrics;
                             const b = compareResult.best;
                             return (
-                              <tr key={r.algorithm} className="border-b border-white/6 hover:bg-white/5">
+                              <tr key={r.algorithm} className="border-b border-neutral-ui/6 hover:bg-neutral-ui/5">
                                 <td className="py-3 pr-3 font-bold">{r.algorithm}</td>
-                                <td className={`py-3 px-3 ${r.algorithm === b.avgWaiting ? 'text-[#30D158] font-extrabold' : ''}`}>
+                                <td className={`py-3 px-3 ${r.algorithm === b.avgWaiting ? 'text-success font-extrabold' : ''}`}>
                                   {m.avgWaiting.toFixed(2)} {r.algorithm === b.avgWaiting && '★'}
                                 </td>
-                                <td className={`py-3 px-3 ${r.algorithm === b.avgTurnaround ? 'text-[#30D158] font-extrabold' : ''}`}>
+                                <td className={`py-3 px-3 ${r.algorithm === b.avgTurnaround ? 'text-success font-extrabold' : ''}`}>
                                   {m.avgTurnaround.toFixed(2)} {r.algorithm === b.avgTurnaround && '★'}
                                 </td>
-                                <td className={`py-3 px-3 ${r.algorithm === b.avgResponse ? 'text-[#30D158] font-extrabold' : ''}`}>
+                                <td className={`py-3 px-3 ${r.algorithm === b.avgResponse ? 'text-success font-extrabold' : ''}`}>
                                   {m.avgResponse.toFixed(2)} {r.algorithm === b.avgResponse && '★'}
                                 </td>
-                                <td className={`py-3 px-3 ${r.algorithm === b.cpuUtilization ? 'text-[#30D158] font-extrabold' : ''}`}>
+                                <td className={`py-3 px-3 ${r.algorithm === b.cpuUtilization ? 'text-success font-extrabold' : ''}`}>
                                   {m.cpuUtilization.toFixed(2)}% {r.algorithm === b.cpuUtilization && '★'}
                                 </td>
                                 <td className="py-3 px-3">{m.throughput.toFixed(4)}</td>
-                                <td className={`py-3 px-3 ${r.algorithm === b.contextSwitches ? 'text-[#30D158] font-extrabold' : ''}`}>
+                                <td className={`py-3 px-3 ${r.algorithm === b.contextSwitches ? 'text-success font-extrabold' : ''}`}>
                                   {m.contextSwitches} {r.algorithm === b.contextSwitches && '★'}
                                 </td>
                                 <td className="py-3 pl-3">{m.makespan}</td>
@@ -2010,7 +1958,7 @@ export default function App() {
 
                   {/* Clean Visual Bar Comparisons */}
                   <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-                    <div className="liquid-glass liquid-card-hover p-5 sm:p-6">
+                    <div className="liquid-glass p-5 sm:p-6">
                       <h3 className="text-base font-bold mb-4">Average Waiting, Turnaround &amp; Response Time</h3>
                       <div className="space-y-4">
                         {(() => {
@@ -2026,25 +1974,25 @@ export default function App() {
                             <div key={r.algorithm}>
                               <div className="flex justify-between gap-2 flex-wrap text-xs font-semibold mb-1.5">
                                 <span>{r.algorithm}</span>
-                                <span className="text-white/60 tabular-nums">
+                                <span className="text-muted tabular-nums">
                                   WT {r.metrics.avgWaiting.toFixed(2)} · TAT {r.metrics.avgTurnaround.toFixed(2)} · RT{' '}
                                   {r.metrics.avgResponse.toFixed(2)}
                                 </span>
                               </div>
                               <div className="space-y-1">
-                                <div className="h-2 rounded-full bg-white/8 overflow-hidden">
+                                <div className="h-2 rounded-full bg-neutral-ui/8 overflow-hidden">
                                   <div
                                     className="h-full rounded-full bg-[#0A84FF] transition-all duration-500"
                                     style={{ width: `${(r.metrics.avgWaiting / maxVal) * 100}%` }}
                                   />
                                 </div>
-                                <div className="h-2 rounded-full bg-white/8 overflow-hidden">
+                                <div className="h-2 rounded-full bg-neutral-ui/8 overflow-hidden">
                                   <div
                                     className="h-full rounded-full bg-[#BF5AF2] transition-all duration-500"
                                     style={{ width: `${(r.metrics.avgTurnaround / maxVal) * 100}%` }}
                                   />
                                 </div>
-                                <div className="h-2 rounded-full bg-white/8 overflow-hidden">
+                                <div className="h-2 rounded-full bg-neutral-ui/8 overflow-hidden">
                                   <div
                                     className="h-full rounded-full bg-[#FF9F0A] transition-all duration-500"
                                     style={{ width: `${(r.metrics.avgResponse / maxVal) * 100}%` }}
@@ -2055,7 +2003,7 @@ export default function App() {
                           ));
                         })()}
                       </div>
-                      <div className="flex flex-wrap gap-4 mt-4 text-[11px] text-white/65">
+                      <div className="flex flex-wrap gap-4 mt-4 text-[11px] text-muted">
                         <span className="flex items-center gap-1.5">
                           <span className="w-2.5 h-2.5 rounded-full bg-[#0A84FF]" />
                           Avg Waiting
@@ -2071,7 +2019,7 @@ export default function App() {
                       </div>
                     </div>
 
-                    <div className="liquid-glass liquid-card-hover p-5 sm:p-6">
+                    <div className="liquid-glass p-5 sm:p-6">
                       <h3 className="text-base font-bold mb-4">CPU Utilization (%) &amp; Context Switches</h3>
                       <div className="space-y-4">
                         {(() => {
@@ -2080,18 +2028,18 @@ export default function App() {
                             <div key={r.algorithm}>
                               <div className="flex justify-between gap-2 flex-wrap text-xs font-semibold mb-1.5">
                                 <span>{r.algorithm}</span>
-                                <span className="text-white/60 tabular-nums">
+                                <span className="text-muted tabular-nums">
                                   CPU {r.metrics.cpuUtilization.toFixed(1)}% · CS {r.metrics.contextSwitches}
                                 </span>
                               </div>
                               <div className="space-y-1">
-                                <div className="h-2.5 rounded-full bg-white/8 overflow-hidden">
+                                <div className="h-2.5 rounded-full bg-neutral-ui/8 overflow-hidden">
                                   <div
                                     className="h-full rounded-full bg-[#30D158] transition-all duration-500"
                                     style={{ width: `${Math.min(100, r.metrics.cpuUtilization)}%` }}
                                   />
                                 </div>
-                                <div className="h-2 rounded-full bg-white/8 overflow-hidden">
+                                <div className="h-2 rounded-full bg-neutral-ui/8 overflow-hidden">
                                   <div
                                     className="h-full rounded-full bg-[#FF453A] transition-all duration-500"
                                     style={{ width: `${(r.metrics.contextSwitches / maxCs) * 100}%` }}
@@ -2102,7 +2050,7 @@ export default function App() {
                           ));
                         })()}
                       </div>
-                      <div className="flex flex-wrap gap-4 mt-4 text-[11px] text-white/65">
+                      <div className="flex flex-wrap gap-4 mt-4 text-[11px] text-muted">
                         <span className="flex items-center gap-1.5">
                           <span className="w-2.5 h-2.5 rounded-full bg-[#30D158]" />
                           CPU Utilization %
@@ -2120,7 +2068,7 @@ export default function App() {
           )}
 
           {/* Mandatory Footer Note */}
-          <footer className="liquid-glass px-5 py-3.5 text-center text-xs text-white/65">
+          <footer className="liquid-glass px-5 py-3.5 text-center text-xs text-muted">
             The agent observes real Windows activity. The simulator models scheduling independently and does not control the
             Windows kernel scheduler.
           </footer>
@@ -2136,17 +2084,17 @@ export default function App() {
           onClick={(e) => {
             if (e.target === e.currentTarget) setCodeDrawerOpen(false);
           }}
-          className="fixed inset-0 z-50 bg-black/70 backdrop-blur-md flex items-center justify-center p-3 sm:p-4"
+          className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-3 sm:p-4"
         >
-          <div className="liquid-glass w-full max-w-6xl h-[88vh] flex flex-col overflow-hidden bg-[#0b1024]/92">
-            <div className="px-4 sm:px-6 py-4 border-b border-white/14 flex items-center justify-between gap-4">
+          <div className="liquid-glass w-full max-w-6xl h-[88vh] flex flex-col overflow-hidden panel-inset">
+            <div className="px-4 sm:px-6 py-4 border-b border-neutral-ui/14 flex items-center justify-between gap-4">
               <div className="min-w-0">
                 <h2 id="c11-modal-title" className="text-sm sm:text-base font-bold truncate">
                   Windows C11 / MinGW Project Bundle (8 Files)
                 </h2>
-                <p className="text-[11px] sm:text-xs text-white/60 truncate">
+                <p className="text-[11px] sm:text-xs text-muted truncate">
                   Compile with:{' '}
-                  <code className="text-[#64D2FF]">
+                  <code className="text-info">
                     gcc -std=c11 -O2 -Wall -Wextra server.c scheduler.c monitor.c -o simulator.exe -lws2_32 -lpsapi -ladvapi32
                   </code>
                 </p>
@@ -2155,13 +2103,13 @@ export default function App() {
                 type="button"
                 onClick={() => setCodeDrawerOpen(false)}
                 aria-label="Close source viewer"
-                className="w-9 h-9 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center cursor-pointer shrink-0"
+                className="w-9 h-9 rounded-full bg-neutral-ui/10 hover:bg-neutral-ui/20 flex items-center justify-center cursor-pointer shrink-0"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
             <div className="flex-1 grid grid-cols-1 md:grid-cols-[240px_1fr] min-h-0">
-              <div className="border-b md:border-b-0 md:border-r border-white/12 p-3 overflow-y-auto max-h-44 md:max-h-none space-y-1.5">
+              <div className="border-b md:border-b-0 md:border-r border-neutral-ui/12 p-3 overflow-y-auto max-h-44 md:max-h-none space-y-1.5">
                 {C_PROJECT_FILES.map((f) => (
                   <button
                     key={f.name}
@@ -2173,27 +2121,27 @@ export default function App() {
                     }}
                     className={`w-full text-left px-3.5 py-2.5 rounded-xl transition-all cursor-pointer ${
                       selectedFile === f.name
-                        ? 'bg-[#0A84FF]/30 border border-[#0A84FF]/50 text-white'
-                        : 'hover:bg-white/8 text-white/70 border border-transparent'
+                        ? 'bg-[#0A84FF]/30 border border-[#0A84FF]/50 text-ink'
+                        : 'hover:bg-neutral-ui/8 text-muted border border-transparent'
                     }`}
                   >
                     <div className="text-xs font-bold font-mono-tabular">{f.label}</div>
-                    <div className="text-[11px] text-white/50 truncate mt-0.5">{f.desc}</div>
+                    <div className="text-[11px] text-muted truncate mt-0.5">{f.desc}</div>
                   </button>
                 ))}
               </div>
               <div className="flex flex-col min-h-0">
-                <div className="px-4 py-2.5 border-b border-white/10 flex items-center justify-between gap-2 bg-white/5 flex-wrap">
-                  <span className="text-xs font-bold font-mono-tabular text-[#64D2FF]">{selectedFile}</span>
+                <div className="px-4 py-2.5 border-b border-neutral-ui/10 flex items-center justify-between gap-2 bg-neutral-ui/5 flex-wrap">
+                  <span className="text-xs font-bold font-mono-tabular text-info">{selectedFile}</span>
                   <div className="flex items-center gap-2">
                     <button
                       type="button"
                       disabled={fileLoading || !fileContents[selectedFile]}
                       onClick={handleCopySource}
-                      className="h-8 px-3 rounded-full bg-white/10 hover:bg-white/20 text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed"
+                      className="h-8 px-3 rounded-full bg-neutral-ui/10 hover:bg-neutral-ui/20 text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed"
                     >
                       {copiedFile === selectedFile ? (
-                        <Check className="w-3.5 h-3.5 text-[#30D158]" />
+                        <Check className="w-3.5 h-3.5 text-success" />
                       ) : (
                         <Copy className="w-3.5 h-3.5" />
                       )}
@@ -2202,7 +2150,7 @@ export default function App() {
                     <a
                       href={`/windows-c-project/${selectedFile}`}
                       download={selectedFile}
-                      className="h-8 px-3 rounded-full bg-[#0A84FF]/30 hover:bg-[#0A84FF]/45 border border-[#0A84FF]/50 text-xs font-semibold inline-flex items-center gap-1.5 text-white"
+                      className="h-8 px-3 rounded-full bg-[#0A84FF]/30 hover:bg-[#0A84FF]/45 border border-[#0A84FF]/50 text-xs font-semibold inline-flex items-center gap-1.5 text-ink"
                     >
                       <Download className="w-3.5 h-3.5" />
                       <span>Download</span>
@@ -2210,18 +2158,18 @@ export default function App() {
                   </div>
                 </div>
                 {fileError ? (
-                  <div className="flex-1 p-6 flex flex-col items-center justify-center gap-3 text-center bg-[#060914]/75">
-                    <p className="text-xs text-[#ff8f89]">{fileError}</p>
+                  <div className="flex-1 p-6 flex flex-col items-center justify-center gap-3 text-center panel-inset">
+                    <p className="text-xs text-danger">{fileError}</p>
                     <button
                       type="button"
                       onClick={() => setFileReloadNonce((n) => n + 1)}
-                      className="h-8 px-4 rounded-full bg-white/12 hover:bg-white/20 text-xs font-semibold cursor-pointer"
+                      className="h-8 px-4 rounded-full bg-neutral-ui/12 hover:bg-neutral-ui/20 text-xs font-semibold cursor-pointer"
                     >
                       Retry
                     </button>
                   </div>
                 ) : (
-                  <pre className="flex-1 p-4 overflow-auto text-xs font-mono-tabular text-white/85 leading-relaxed bg-[#060914]/75">
+                  <pre className="flex-1 p-4 overflow-auto text-xs font-mono-tabular text-ink leading-relaxed panel-inset">
                     <code>{fileLoading && !fileContents[selectedFile] ? 'Loading source file...' : fileContents[selectedFile] || ''}</code>
                   </pre>
                 )}
@@ -2239,7 +2187,7 @@ export default function App() {
         {toasts.map((t) => (
           <div
             key={t.id}
-            className="pointer-events-auto px-4 py-3 rounded-2xl bg-[#141a34]/90 backdrop-blur-2xl border border-white/24 shadow-2xl text-xs font-semibold text-white flex items-center gap-2.5"
+            className="pointer-events-auto px-4 py-3 rounded-2xl panel-inset border border-neutral-ui/24 shadow-2xl text-xs font-semibold text-ink flex items-center gap-2.5"
           >
             <span
               className="w-2.5 h-2.5 rounded-full shrink-0"
