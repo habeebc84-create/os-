@@ -35,7 +35,7 @@ export class ErrorBoundary extends React.Component<
             <button
               type="button"
               onClick={this.handleReload}
-              className="h-10 px-5 rounded-full bg-[#0A84FF] hover:bg-[#0A84FF]/90 text-xs font-semibold text-white cursor-pointer"
+              className="h-10 px-5 rounded-full bg-brand hover:bg-brand/90 text-xs font-semibold text-on-brand cursor-pointer"
             >
               Reset Interface
             </button>

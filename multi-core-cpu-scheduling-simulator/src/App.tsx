@@ -60,7 +60,8 @@ interface OSProcess {
   isNew?: boolean;
 }
 
-const PROC_SOLID = ['#0A84FF', '#BF5AF2', '#FF9F0A', '#30D158', '#FF453A', '#5E5CE6', '#64D2FF', '#FFD60A'];
+// Process fills: light, distinct hues that keep the dark Gantt label (--timeline-label) above 7:1.
+const PROC_SOLID = ['#4FD1C5', '#F2B950', '#FF8F7A', '#7CB8F2', '#A8DB6A', '#F7A8C8', '#6FDCEB', '#E8D36A'];
 
 const C_PROJECT_FILES = [
   { name: 'scheduler.h', label: 'scheduler.h', desc: 'Data structures & scheduling API' },
@@ -184,8 +185,8 @@ const LiveSparkChart = React.memo(function LiveSparkChart({
     <svg viewBox={`0 0 ${w} ${h}`} className="w-full h-[210px] overflow-visible" role="img" aria-label="Live utilization chart">
       <defs>
         <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor={stroke} stopOpacity="0.44" />
-          <stop offset="100%" stopColor={stroke} stopOpacity="0.02" />
+          <stop offset="0%" style={{ stopColor: stroke }} stopOpacity="0.44" />
+          <stop offset="100%" style={{ stopColor: stroke }} stopOpacity="0.02" />
         </linearGradient>
       </defs>
       {[0, 25, 50, 75, 100].map((tick) => {
@@ -200,7 +201,7 @@ const LiveSparkChart = React.memo(function LiveSparkChart({
         );
       })}
       <path d={areaPath} fill={`url(#${gradientId})`} />
-      <path d={linePath} fill="none" stroke={stroke} strokeWidth="2.5" strokeLinejoin="round" strokeLinecap="round" />
+      <path d={linePath} fill="none" style={{ stroke }} strokeWidth="2.5" strokeLinejoin="round" strokeLinecap="round" />
     </svg>
   );
 });
@@ -212,7 +213,7 @@ export default function App() {
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
-    document.querySelector('meta[name="theme-color"]')?.setAttribute('content', theme === 'light' ? '#f3f6fb' : '#101625');
+    document.querySelector('meta[name="theme-color"]')?.setAttribute('content', theme === 'light' ? '#f4f6f5' : '#0d1317');
   }, [theme]);
 
   const toggleTheme = () => {
@@ -310,7 +311,7 @@ export default function App() {
   const [fileReloadNonce, setFileReloadNonce] = useState(0);
   const [copiedFile, setCopiedFile] = useState<string | null>(null);
 
-  const pushToast = useCallback((message: string, color = '#0A84FF') => {
+  const pushToast = useCallback((message: string, color = 'var(--info)') => {
     const id = Date.now() + Math.random();
     setToasts((prev) => [...prev.slice(-3), { id, message, color }]);
     const timer = window.setTimeout(() => {
@@ -489,7 +490,7 @@ export default function App() {
       })));
       knownPidsRef.current = new Set(incoming.map(({ pid }) => pid));
       setProcessLoadError(false);
-      if (manual) pushToast(`Refreshed ${incoming.length} Windows processes`, '#64D2FF');
+      if (manual) pushToast(`Refreshed ${incoming.length} Windows processes`, 'var(--info)');
     } catch {
       if (!controller.signal.aborted) setProcessLoadError(true);
     } finally {
@@ -605,7 +606,7 @@ export default function App() {
 
   const handleRunSimulation = async () => {
     if (!processes.length) {
-      pushToast('Add at least one process first', '#FF453A');
+      pushToast('Add at least one process first', 'var(--danger)');
       return;
     }
     const effectiveCores = commitCoresInput(coresInput);
@@ -634,7 +635,7 @@ export default function App() {
           if (!Array.isArray(data?.gantt) || !Array.isArray(data?.ticks) || !Array.isArray(data?.processes) ||
               !Array.isArray(data?.metrics?.coreUtilization)) throw new Error('Invalid Windows simulation result.');
           setSimResult(data);
-          pushToast(`C11 backend simulation complete (${data.algorithm}, ${data.cores} cores)`, '#30D158');
+          pushToast(`C11 backend simulation complete (${data.algorithm}, ${data.cores} cores)`, 'var(--success)');
           return;
         } catch {
           // Seamless fallback to exact local TypeScript engine
@@ -647,12 +648,12 @@ export default function App() {
       });
       setSimResult(res);
       if (res.truncated) {
-        pushToast(`Simulation reached ${SIM_LIMITS.MAX_SIM_TICKS} tick safety limit`, '#FF9F0A');
+        pushToast(`Simulation reached ${SIM_LIMITS.MAX_SIM_TICKS} tick safety limit`, 'var(--warning)');
       } else {
-        pushToast(`Simulation complete (${res.algorithm}, ${res.cores} cores)`, '#30D158');
+        pushToast(`Simulation complete (${res.algorithm}, ${res.cores} cores)`, 'var(--success)');
       }
     } catch {
-      pushToast('Simulation failed. Run it again to retry.', '#FF453A');
+      pushToast('Simulation failed. Run it again to retry.', 'var(--danger)');
     } finally {
       setIsSimulating(false);
     }
@@ -661,7 +662,7 @@ export default function App() {
   const executeCompareAll = useCallback(
     async (silent = false) => {
       if (!processes.length) {
-        if (!silent) pushToast('Add processes in the Simulator tab first', '#FF453A');
+        if (!silent) pushToast('Add processes in the Simulator tab first', 'var(--danger)');
         return;
       }
       const request = ++comparisonRequest.current;
@@ -685,7 +686,7 @@ export default function App() {
             }
             setCompareResult(data);
             setLastComparedSignature(workloadSignature);
-            if (!silent) pushToast('Compared all 5 scheduling algorithms (C11 backend)', '#BF5AF2');
+            if (!silent) pushToast('Compared all 5 scheduling algorithms (C11 backend)', 'var(--accent)');
             return;
           } catch {
             // Fall back to local engine
@@ -695,7 +696,7 @@ export default function App() {
         if (request !== comparisonRequest.current) return;
         setCompareResult(cmp);
         setLastComparedSignature(workloadSignature);
-        if (!silent) pushToast('Compared all 5 scheduling algorithms', '#BF5AF2');
+        if (!silent) pushToast('Compared all 5 scheduling algorithms', 'var(--accent)');
       } catch {
         if (request === comparisonRequest.current) setCompareError('Comparison failed. Select Compare All Algorithms to retry.');
       } finally {
@@ -732,7 +733,7 @@ export default function App() {
   const handleTogglePlay = () => {
     const makespan = simResult.metrics.makespan;
     if (!makespan || !simResult.processes.length) {
-      pushToast('Run a simulation with at least one process first', '#FF9F0A');
+      pushToast('Run a simulation with at least one process first', 'var(--warning)');
       return;
     }
     if (isPlaying) {
@@ -757,7 +758,7 @@ export default function App() {
         syncPlayheadDom(makespan, makespan);
         setPlayTick(makespan);
         stopReplay();
-        pushToast('Gantt replay finished', '#64D2FF');
+        pushToast('Gantt replay finished', 'var(--info)');
         return;
       }
       syncPlayheadDom(p, makespan);
@@ -786,14 +787,14 @@ export default function App() {
     );
     if (!validation.ok) {
       setFormError(validation.error);
-      pushToast(validation.error, '#FF453A');
+      pushToast(validation.error, 'var(--danger)');
       return;
     }
     setFormError(null);
     const next = [...processes, validation.value];
     setProcesses(next);
     setNewPid(getNextSuggestedPid(next));
-    pushToast(`Added process ${validation.value.pid}`, '#30D158');
+    pushToast(`Added process ${validation.value.pid}`, 'var(--success)');
   };
 
   const handleLoadSample = () => {
@@ -816,7 +817,7 @@ export default function App() {
     setLastComparedSignature(
       JSON.stringify({ processes: SAMPLE_WORKLOAD, cores: 2, quantum: 3, priorityMode })
     );
-    pushToast('Sample workload loaded (P1–P5, 2 cores, Q=3)', '#0A84FF');
+    pushToast('Sample workload loaded (P1–P5, 2 cores, Q=3)', 'var(--info)');
   };
 
   const handleRandomize = () => {
@@ -836,7 +837,7 @@ export default function App() {
     const effectiveQuantum = commitQuantumInput(quantumInput);
     const res = runMultiCoreSimulation(list, algorithm, effectiveCores, effectiveQuantum, priorityMode);
     setSimResult(res);
-    pushToast(`Generated & simulated ${count} random processes`, '#BF5AF2');
+    pushToast(`Generated & simulated ${count} random processes`, 'var(--accent)');
   };
 
   const handleClearProcesses = () => {
@@ -845,12 +846,12 @@ export default function App() {
     setFormError(null);
     setProcesses([]);
     setNewPid('P1');
-    pushToast('Process queue cleared', '#FF9F0A');
+    pushToast('Process queue cleared', 'var(--warning)');
   };
 
   const handleDownloadCsv = async () => {
     if (!processes.length && !simResult.processes.length) {
-      pushToast('Run a simulation first to export a CSV report', '#FF453A');
+      pushToast('Run a simulation first to export a CSV report', 'var(--danger)');
       return;
     }
     let cmpForExport = compareResult;
@@ -859,7 +860,7 @@ export default function App() {
         cmpForExport = await runSchedulerJob({ kind: 'compare', args: [processes, cores, quantum, priorityMode] });
       }
     } catch {
-      pushToast('Could not generate the CSV report. Please try again.', '#FF453A');
+      pushToast('Could not generate the CSV report. Please try again.', 'var(--danger)');
       return;
     }
     const csv = buildCsvReport(simResult, processes.length > 0 ? cmpForExport : null);
@@ -872,7 +873,7 @@ export default function App() {
     a.click();
     document.body.removeChild(a);
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-    pushToast('Report downloaded (cpu_scheduler_report.csv)', '#30D158');
+    pushToast('Report downloaded (cpu_scheduler_report.csv)', 'var(--success)');
   };
 
   const handleLaunchApp = async (app: 'chrome' | 'vscode' | 'notepad' | 'calculator') => {
@@ -918,11 +919,11 @@ export default function App() {
         if (!ok) throw new Error('Clipboard copy blocked by browser');
       }
       setCopiedFile(selectedFile);
-      pushToast(`Copied ${selectedFile}`, '#30D158');
+      pushToast(`Copied ${selectedFile}`, 'var(--success)');
       if (copyTimerRef.current !== null) window.clearTimeout(copyTimerRef.current);
       copyTimerRef.current = window.setTimeout(() => setCopiedFile(null), 1800);
     } catch {
-      pushToast('Clipboard access blocked — use Download instead', '#FF453A');
+      pushToast('Clipboard access blocked — use Download instead', 'var(--danger)');
     }
   };
 
@@ -981,7 +982,7 @@ export default function App() {
     procSort.key === key ? (procSort.dir === 1 ? '↑' : '↓') : '↕';
 
   return (
-    <div className="relative min-h-screen text-ink selection:bg-[#0A84FF]/40">
+    <div className="relative min-h-screen text-ink selection:bg-brand/40">
       {/* Main Responsive Shell */}
       <div className="relative z-10 max-w-[1600px] mx-auto p-3 sm:p-4 lg:p-5 grid grid-cols-1 lg:grid-cols-[268px_minmax(0,1fr)] gap-4 sm:gap-5 min-h-screen">
         {/* Floating Glass Sidebar */}
@@ -1002,9 +1003,9 @@ export default function App() {
                 style={{
                   transform: `translateY(${activeTabIndex * 56}px)`,
                   transitionTimingFunction: 'cubic-bezier(0.34, 1.56, 0.64, 1)',
-                  background: 'linear-gradient(135deg, rgba(10,132,255,0.4), rgba(191,90,242,0.32))',
-                  border: '1px solid rgba(255,255,255,0.32)',
-                  boxShadow: '0 8px 24px rgba(10,132,255,0.28), inset 0 1px 1px rgba(255,255,255,0.4)',
+                  background: 'color-mix(in srgb, var(--primary-action) 30%, transparent)',
+                  border: '1px solid color-mix(in srgb, var(--primary-action) 60%, transparent)',
+                  boxShadow: 'var(--shadow)',
                 }}
               />
               {navItems.map((item) => {
@@ -1020,7 +1021,7 @@ export default function App() {
                     aria-current={active ? 'page' : undefined}
                     className={`relative z-10 h-11 lg:h-12 px-3.5 rounded-2xl flex items-center gap-2.5 lg:gap-3 text-xs sm:text-sm font-semibold whitespace-nowrap shrink-0 cursor-pointer transition-all ${
                       active
-                        ? 'text-ink lg:bg-transparent bg-gradient-to-r from-[#0A84FF]/40 to-[#BF5AF2]/35'
+                        ? 'text-ink lg:bg-transparent bg-brand/30 ring-1 ring-brand/50'
                         : 'text-muted hover:text-ink hover:translate-x-0.5'
                     }`}
                   >
@@ -1076,8 +1077,8 @@ export default function App() {
                 <span
                   className={`w-2.5 h-2.5 rounded-full shrink-0 ${
                     backendConnected
-                      ? 'bg-[#30D158] shadow-[0_0_12px_#30D158]'
-                      : 'bg-[#FF453A] shadow-[0_0_10px_#FF453A]'
+                      ? 'bg-success shadow-[0_0_12px_var(--success)]'
+                      : 'bg-danger shadow-[0_0_10px_var(--danger)]'
                   }`}
                 />
                 <span className="truncate">
@@ -1095,7 +1096,7 @@ export default function App() {
                 className="liquid-glass p-5 sm:p-7 grid grid-cols-1 xl:grid-cols-[1.35fr_1fr] gap-6 items-center"
                 style={{
                   background:
-                    'linear-gradient(135deg, rgba(10,132,255,0.16) 0%, rgba(191,90,242,0.11) 55%, rgba(255,159,10,0.08) 100%)',
+                    'linear-gradient(135deg, color-mix(in srgb, var(--primary-action) 16%, transparent) 0%, var(--panel) 60%, color-mix(in srgb, var(--warning) 8%, transparent) 100%)',
                 }}
               >
                 <div>
@@ -1134,7 +1135,7 @@ export default function App() {
                       <select
                         value={algorithm}
                         onChange={(e) => setAlgorithm(e.target.value as AlgorithmType)}
-                        className="w-full h-11 px-3.5 rounded-2xl panel-inset border border-neutral-ui/18 text-sm text-ink outline-none focus:border-[#0A84FF] focus:ring-2 focus:ring-[#0A84FF]/35"
+                        className="w-full h-11 px-3.5 rounded-2xl panel-inset border border-neutral-ui/18 text-sm text-ink outline-none focus:border-brand focus:ring-2 focus:ring-brand/35"
                       >
                         <option value="FCFS">FCFS (Non-Preemptive)</option>
                         <option value="SJF">SJF (Non-Preemptive)</option>
@@ -1158,7 +1159,7 @@ export default function App() {
                           }
                         }}
                         onBlur={(e) => commitCoresInput(e.target.value)}
-                        className="w-full h-11 px-3.5 rounded-2xl panel-inset border border-neutral-ui/18 text-sm text-ink tabular-nums outline-none focus:border-[#0A84FF] focus:ring-2 focus:ring-[#0A84FF]/35"
+                        className="w-full h-11 px-3.5 rounded-2xl panel-inset border border-neutral-ui/18 text-sm text-ink tabular-nums outline-none focus:border-brand focus:ring-2 focus:ring-brand/35"
                       />
                     </label>
                     <label className="block">
@@ -1176,7 +1177,7 @@ export default function App() {
                           }
                         }}
                         onBlur={(e) => commitQuantumInput(e.target.value)}
-                        className="w-full h-11 px-3.5 rounded-2xl panel-inset border border-neutral-ui/18 text-sm text-ink tabular-nums outline-none focus:border-[#0A84FF] focus:ring-2 focus:ring-[#0A84FF]/35"
+                        className="w-full h-11 px-3.5 rounded-2xl panel-inset border border-neutral-ui/18 text-sm text-ink tabular-nums outline-none focus:border-brand focus:ring-2 focus:ring-brand/35"
                       />
                     </label>
                     <label className="block">
@@ -1184,7 +1185,7 @@ export default function App() {
                       <select
                         value={priorityMode}
                         onChange={(e) => setPriorityMode(e.target.value as PriorityMode)}
-                        className="w-full h-11 px-3.5 rounded-2xl panel-inset border border-neutral-ui/18 text-sm text-ink outline-none focus:border-[#0A84FF] focus:ring-2 focus:ring-[#0A84FF]/35"
+                        className="w-full h-11 px-3.5 rounded-2xl panel-inset border border-neutral-ui/18 text-sm text-ink outline-none focus:border-brand focus:ring-2 focus:ring-brand/35"
                       >
                         <option value="preemptive">Preemptive</option>
                         <option value="non-preemptive">Non-Preemptive</option>
@@ -1197,10 +1198,10 @@ export default function App() {
                       type="button"
                       onClick={handleRunSimulation}
                       disabled={isSimulating || !processes.length}
-                      className="h-11 px-5 rounded-full text-sm font-semibold text-white flex items-center gap-2 cursor-pointer spring-btn whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed"
+                      className="h-11 px-5 rounded-full text-sm font-semibold text-on-brand flex items-center gap-2 cursor-pointer spring-btn whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed"
                       style={{
                         background: 'var(--primary-action)',
-                        boxShadow: '0 10px 26px rgba(10,132,255,0.42), inset 0 1px 1px rgba(255,255,255,0.45)',
+                        boxShadow: '0 8px 22px color-mix(in srgb, var(--primary-action) 35%, transparent)',
                       }}
                     >
                       <Play className="w-4 h-4 fill-current" />
@@ -1256,7 +1257,7 @@ export default function App() {
                             setNewPid(e.target.value);
                             if (formError) setFormError(null);
                           }}
-                          className="w-full h-10 px-3 rounded-xl panel-inset border border-neutral-ui/18 text-sm text-ink outline-none focus:border-[#0A84FF]"
+                          className="w-full h-10 px-3 rounded-xl panel-inset border border-neutral-ui/18 text-sm text-ink outline-none focus:border-brand"
                         />
                       </label>
                       <label className="block">
@@ -1270,7 +1271,7 @@ export default function App() {
                             setNewArrival(e.target.value);
                             if (formError) setFormError(null);
                           }}
-                          className="w-full h-10 px-3 rounded-xl panel-inset border border-neutral-ui/18 text-sm text-ink tabular-nums outline-none focus:border-[#0A84FF]"
+                          className="w-full h-10 px-3 rounded-xl panel-inset border border-neutral-ui/18 text-sm text-ink tabular-nums outline-none focus:border-brand"
                         />
                       </label>
                       <label className="block">
@@ -1284,7 +1285,7 @@ export default function App() {
                             setNewBurst(e.target.value);
                             if (formError) setFormError(null);
                           }}
-                          className="w-full h-10 px-3 rounded-xl panel-inset border border-neutral-ui/18 text-sm text-ink tabular-nums outline-none focus:border-[#0A84FF]"
+                          className="w-full h-10 px-3 rounded-xl panel-inset border border-neutral-ui/18 text-sm text-ink tabular-nums outline-none focus:border-brand"
                         />
                       </label>
                       <label className="block">
@@ -1298,7 +1299,7 @@ export default function App() {
                             setNewPriority(e.target.value);
                             if (formError) setFormError(null);
                           }}
-                          className="w-full h-10 px-3 rounded-xl panel-inset border border-neutral-ui/18 text-sm text-ink tabular-nums outline-none focus:border-[#0A84FF]"
+                          className="w-full h-10 px-3 rounded-xl panel-inset border border-neutral-ui/18 text-sm text-ink tabular-nums outline-none focus:border-brand"
                         />
                       </label>
                     </div>
@@ -1311,7 +1312,7 @@ export default function App() {
                       <button
                         type="submit"
                         disabled={processes.length >= SIM_LIMITS.MAX_PROCS}
-                        className="h-9 px-4 rounded-full bg-[#30D158]/25 hover:bg-[#30D158]/35 border border-[#30D158]/45 text-xs font-semibold text-ink inline-flex items-center gap-1.5 cursor-pointer spring-btn disabled:opacity-45 disabled:cursor-not-allowed"
+                        className="h-9 px-4 rounded-full bg-success/25 hover:bg-success/35 border border-success/45 text-xs font-semibold text-ink inline-flex items-center gap-1.5 cursor-pointer spring-btn disabled:opacity-45 disabled:cursor-not-allowed"
                       >
                         <Plus className="w-3.5 h-3.5" />
                         <span>Add Process</span>
@@ -1393,10 +1394,10 @@ export default function App() {
                       type="button"
                       onClick={handleTogglePlay}
                       disabled={isSimulating || !simResult.metrics.makespan}
-                      className="h-9 px-4 rounded-full text-xs font-semibold text-white flex items-center gap-1.5 cursor-pointer spring-btn disabled:opacity-45 disabled:cursor-not-allowed"
+                      className="h-9 px-4 rounded-full text-xs font-semibold text-on-brand flex items-center gap-1.5 cursor-pointer spring-btn disabled:opacity-45 disabled:cursor-not-allowed"
                       style={{
                         background: 'var(--primary-action)',
-                        boxShadow: '0 6px 20px rgba(10,132,255,0.38)',
+                        boxShadow: '0 6px 20px color-mix(in srgb, var(--primary-action) 32%, transparent)',
                       }}
                     >
                       {isPlaying ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5 fill-current" />}
@@ -1421,7 +1422,7 @@ export default function App() {
                       <div
                         key={c.core}
                         className={`p-4 rounded-2xl panel-inset border ${
-                          isBusy ? 'border-[#0A84FF]/65' : 'border-neutral-ui/12 opacity-60'
+                          isBusy ? 'border-brand/65' : 'border-neutral-ui/12 opacity-60'
                         }`}
                       >
                         <div className="flex items-center justify-between text-xs font-bold text-muted mb-2">
@@ -1433,7 +1434,7 @@ export default function App() {
                           style={{
                             color:
                               livePid !== 'IDLE' && livePid !== 'ACTIVE'
-                                ? PROC_SOLID[pidColorIndex[livePid] ?? 0]
+                                ? (theme === 'light' ? 'var(--ink)' : PROC_SOLID[pidColorIndex[livePid] ?? 0])
                                 : isBusy
                                   ? 'var(--ink)'
                                   : 'var(--muted)',
@@ -1446,7 +1447,7 @@ export default function App() {
                             className="h-full rounded-full transition-all duration-500"
                             style={{
                               width: `${Math.min(100, c.utilization)}%`,
-                              background: 'linear-gradient(90deg, #0A84FF, #BF5AF2)',
+                              background: 'linear-gradient(90deg, var(--primary-action), var(--accent))',
                             }}
                           />
                         </div>
@@ -1602,7 +1603,7 @@ export default function App() {
                   </button>
                 ) : (
                   <button type="button" disabled={isConnecting || !canConnectToAgent} onClick={() => void connectAgent()}
-                    className="h-9 px-4 rounded-full bg-[var(--primary-action)] text-white text-xs font-semibold cursor-pointer disabled:opacity-60">
+                    className="h-9 px-4 rounded-full bg-[var(--primary-action)] text-on-brand text-xs font-semibold cursor-pointer disabled:opacity-60">
                     {isConnecting ? 'Connecting…' : 'Connect Windows Agent'}
                   </button>
                 )}
@@ -1644,8 +1645,8 @@ export default function App() {
                     <svg className="w-36 h-36 -rotate-90" viewBox="0 0 140 140" role="img" aria-label={`CPU load ${liveCpu.toFixed(1)} percent`}>
                       <defs>
                         <linearGradient id="cpuGaugeGrad" x1="0%" y1="0%" x2="100%" y2="0%">
-                          <stop offset="0%" stopColor="#0A84FF" />
-                          <stop offset="100%" stopColor="#64D2FF" />
+                          <stop offset="0%" style={{ stopColor: 'var(--primary-action)' }} />
+                          <stop offset="100%" style={{ stopColor: 'var(--accent)' }} />
                         </linearGradient>
                       </defs>
                       <circle cx="70" cy="70" r="56" fill="none" stroke="var(--stroke)" strokeWidth="12" />
@@ -1686,8 +1687,8 @@ export default function App() {
                     <svg className="w-36 h-36 -rotate-90" viewBox="0 0 140 140" role="img" aria-label={`RAM usage ${liveRamPct.toFixed(1)} percent`}>
                       <defs>
                         <linearGradient id="ramGaugeGrad" x1="0%" y1="0%" x2="100%" y2="0%">
-                          <stop offset="0%" stopColor="#BF5AF2" />
-                          <stop offset="100%" stopColor="#FF9F0A" />
+                          <stop offset="0%" style={{ stopColor: 'var(--warning)' }} />
+                          <stop offset="100%" style={{ stopColor: 'var(--danger)' }} />
                         </linearGradient>
                       </defs>
                       <circle cx="70" cy="70" r="56" fill="none" stroke="var(--stroke)" strokeWidth="12" />
@@ -1729,12 +1730,12 @@ export default function App() {
                 <div className="liquid-glass p-5 sm:p-6">
                   <h3 className="text-base font-bold mb-1">CPU Utilization — Last 60 Seconds</h3>
                   <p className="text-xs text-muted mb-4">{backendConnected ? 'Live Windows readings' : 'Simulated preview readings'}</p>
-                  <LiveSparkChart data={cpuSeries} stroke="#0A84FF" gradientId="cpuAreaFill" />
+                  <LiveSparkChart data={cpuSeries} stroke="var(--accent)" gradientId="cpuAreaFill" />
                 </div>
                 <div className="liquid-glass p-5 sm:p-6">
                   <h3 className="text-base font-bold mb-1">RAM Utilization — Last 60 Seconds</h3>
                   <p className="text-xs text-muted mb-4">{backendConnected ? 'Live Windows readings' : 'Simulated preview readings'}</p>
-                  <LiveSparkChart data={ramSeries} stroke="#BF5AF2" gradientId="ramAreaFill" />
+                  <LiveSparkChart data={ramSeries} stroke="var(--warning)" gradientId="ramAreaFill" />
                 </div>
               </div>
             </div>
@@ -1761,7 +1762,7 @@ export default function App() {
                       value={pinCore}
                       onChange={(e) => setPinCore(Number(e.target.value))}
                       disabled={!backendConnected || !hwInfo.affinityCores?.length || launchingApp !== null}
-                      className="h-9 px-3 rounded-xl panel-inset border border-neutral-ui/18 text-xs text-ink outline-none focus:border-[#0A84FF] disabled:opacity-50"
+                      className="h-9 px-3 rounded-xl panel-inset border border-neutral-ui/18 text-xs text-ink outline-none focus:border-brand disabled:opacity-50"
                     >
                       <option value={-1}>OS Default (Auto)</option>
                       {hwInfo.affinityCores?.map((core) => (
@@ -1777,8 +1778,7 @@ export default function App() {
                     type="button"
                     disabled={!backendConnected || launchingApp !== null}
                     onClick={() => handleLaunchApp('chrome')}
-                    className="h-10 px-5 rounded-full text-xs font-semibold text-ink cursor-pointer spring-btn disabled:opacity-55 disabled:cursor-not-allowed"
-                    style={{ background: 'linear-gradient(135deg, #0A84FF, #38BDF8)' }}
+                    className="h-10 px-5 rounded-full bg-brand/25 border border-brand/45 text-xs font-semibold text-ink cursor-pointer spring-btn disabled:opacity-55 disabled:cursor-not-allowed"
                   >
                     {launchingApp === 'chrome' ? 'Launching...' : 'Launch Chrome'}
                   </button>
@@ -1786,8 +1786,7 @@ export default function App() {
                     type="button"
                     disabled={!backendConnected || launchingApp !== null}
                     onClick={() => handleLaunchApp('vscode')}
-                    className="h-10 px-5 rounded-full text-xs font-semibold text-ink cursor-pointer spring-btn disabled:opacity-55 disabled:cursor-not-allowed"
-                    style={{ background: 'linear-gradient(135deg, #5E5CE6, #BF5AF2)' }}
+                    className="h-10 px-5 rounded-full bg-accent/20 border border-accent/45 text-xs font-semibold text-ink cursor-pointer spring-btn disabled:opacity-55 disabled:cursor-not-allowed"
                   >
                     {launchingApp === 'vscode' ? 'Launching...' : 'Launch VS Code'}
                   </button>
@@ -1795,7 +1794,7 @@ export default function App() {
                     type="button"
                     disabled={!backendConnected || launchingApp !== null}
                     onClick={() => handleLaunchApp('notepad')}
-                    className="h-10 px-5 rounded-full bg-[#30D158]/25 border border-[#30D158]/45 text-xs font-semibold text-ink cursor-pointer spring-btn disabled:opacity-55 disabled:cursor-not-allowed"
+                    className="h-10 px-5 rounded-full bg-success/25 border border-success/45 text-xs font-semibold text-ink cursor-pointer spring-btn disabled:opacity-55 disabled:cursor-not-allowed"
                   >
                     {launchingApp === 'notepad' ? 'Launching...' : 'Launch Notepad'}
                   </button>
@@ -1803,7 +1802,7 @@ export default function App() {
                     type="button"
                     disabled={!backendConnected || launchingApp !== null}
                     onClick={() => handleLaunchApp('calculator')}
-                    className="h-10 px-5 rounded-full bg-[#FF9F0A]/25 border border-[#FF9F0A]/45 text-xs font-semibold text-ink cursor-pointer spring-btn disabled:opacity-55 disabled:cursor-not-allowed"
+                    className="h-10 px-5 rounded-full bg-warning/25 border border-warning/45 text-xs font-semibold text-ink cursor-pointer spring-btn disabled:opacity-55 disabled:cursor-not-allowed"
                   >
                     {launchingApp === 'calculator' ? 'Launching...' : 'Launch Calculator'}
                   </button>
@@ -1837,7 +1836,7 @@ export default function App() {
                         onChange={(e) => setProcSearch(e.target.value)}
                         placeholder="Search process or PID..."
                         aria-label="Search process or PID"
-                        className="h-9 pl-9 pr-8 rounded-full panel-inset border border-neutral-ui/18 text-xs text-ink outline-none focus:border-[#0A84FF] w-full sm:w-56"
+                        className="h-9 pl-9 pr-8 rounded-full panel-inset border border-neutral-ui/18 text-xs text-ink outline-none focus:border-brand w-full sm:w-56"
                       />
                       {procSearch && (
                         <button
@@ -1892,7 +1891,7 @@ export default function App() {
                         <tr
                           key={`${p.pid}-${p.name}`}
                           className={`border-b border-neutral-ui/6 hover:bg-neutral-ui/5 transition-colors ${
-                            p.isNew ? 'bg-[#30D158]/15' : ''
+                            p.isNew ? 'bg-success/15' : ''
                           }`}
                         >
                           <td className="py-2.5 pr-4 font-semibold">{p.name}</td>
@@ -1932,10 +1931,10 @@ export default function App() {
                     type="button"
                     disabled={isComparing || !processes.length}
                     onClick={() => executeCompareAll(false)}
-                    className="h-10 px-5 rounded-full text-xs font-semibold text-white cursor-pointer spring-btn disabled:opacity-45 disabled:cursor-not-allowed"
+                    className="h-10 px-5 rounded-full text-xs font-semibold text-on-brand cursor-pointer spring-btn disabled:opacity-45 disabled:cursor-not-allowed"
                     style={{
                       background: 'var(--primary-action)',
-                      boxShadow: '0 8px 24px rgba(10,132,255,0.4)',
+                      boxShadow: '0 8px 22px color-mix(in srgb, var(--primary-action) 35%, transparent)',
                     }}
                   >
                     {isComparing ? 'Comparing...' : 'Compare All Algorithms'}
@@ -1944,7 +1943,7 @@ export default function App() {
                     type="button"
                     disabled={!processes.length && !simResult.processes.length}
                     onClick={handleDownloadCsv}
-                    className="h-10 px-5 rounded-full bg-[#30D158]/25 hover:bg-[#30D158]/35 border border-[#30D158]/45 text-xs font-semibold text-ink inline-flex items-center gap-2 cursor-pointer spring-btn disabled:opacity-45 disabled:cursor-not-allowed"
+                    className="h-10 px-5 rounded-full bg-success/25 hover:bg-success/35 border border-success/45 text-xs font-semibold text-ink inline-flex items-center gap-2 cursor-pointer spring-btn disabled:opacity-45 disabled:cursor-not-allowed"
                   >
                     <Download className="w-4 h-4" />
                     <span>Download CSV Report</span>
@@ -2051,19 +2050,19 @@ export default function App() {
                               <div className="space-y-1">
                                 <div className="h-2 rounded-full bg-neutral-ui/8 overflow-hidden">
                                   <div
-                                    className="h-full rounded-full bg-[#0A84FF] transition-all duration-500"
+                                    className="h-full rounded-full bg-brand transition-all duration-500"
                                     style={{ width: `${(r.metrics.avgWaiting / maxVal) * 100}%` }}
                                   />
                                 </div>
                                 <div className="h-2 rounded-full bg-neutral-ui/8 overflow-hidden">
                                   <div
-                                    className="h-full rounded-full bg-[#BF5AF2] transition-all duration-500"
+                                    className="h-full rounded-full bg-accent transition-all duration-500"
                                     style={{ width: `${(r.metrics.avgTurnaround / maxVal) * 100}%` }}
                                   />
                                 </div>
                                 <div className="h-2 rounded-full bg-neutral-ui/8 overflow-hidden">
                                   <div
-                                    className="h-full rounded-full bg-[#FF9F0A] transition-all duration-500"
+                                    className="h-full rounded-full bg-warning transition-all duration-500"
                                     style={{ width: `${(r.metrics.avgResponse / maxVal) * 100}%` }}
                                   />
                                 </div>
@@ -2074,15 +2073,15 @@ export default function App() {
                       </div>
                       <div className="flex flex-wrap gap-4 mt-4 text-[11px] text-muted">
                         <span className="flex items-center gap-1.5">
-                          <span className="w-2.5 h-2.5 rounded-full bg-[#0A84FF]" />
+                          <span className="w-2.5 h-2.5 rounded-full bg-brand" />
                           Avg Waiting
                         </span>
                         <span className="flex items-center gap-1.5">
-                          <span className="w-2.5 h-2.5 rounded-full bg-[#BF5AF2]" />
+                          <span className="w-2.5 h-2.5 rounded-full bg-accent" />
                           Avg Turnaround
                         </span>
                         <span className="flex items-center gap-1.5">
-                          <span className="w-2.5 h-2.5 rounded-full bg-[#FF9F0A]" />
+                          <span className="w-2.5 h-2.5 rounded-full bg-warning" />
                           Avg Response
                         </span>
                       </div>
@@ -2104,13 +2103,13 @@ export default function App() {
                               <div className="space-y-1">
                                 <div className="h-2.5 rounded-full bg-neutral-ui/8 overflow-hidden">
                                   <div
-                                    className="h-full rounded-full bg-[#30D158] transition-all duration-500"
+                                    className="h-full rounded-full bg-success transition-all duration-500"
                                     style={{ width: `${Math.min(100, r.metrics.cpuUtilization)}%` }}
                                   />
                                 </div>
                                 <div className="h-2 rounded-full bg-neutral-ui/8 overflow-hidden">
                                   <div
-                                    className="h-full rounded-full bg-[#FF453A] transition-all duration-500"
+                                    className="h-full rounded-full bg-danger transition-all duration-500"
                                     style={{ width: `${(r.metrics.contextSwitches / maxCs) * 100}%` }}
                                   />
                                 </div>
@@ -2121,11 +2120,11 @@ export default function App() {
                       </div>
                       <div className="flex flex-wrap gap-4 mt-4 text-[11px] text-muted">
                         <span className="flex items-center gap-1.5">
-                          <span className="w-2.5 h-2.5 rounded-full bg-[#30D158]" />
+                          <span className="w-2.5 h-2.5 rounded-full bg-success" />
                           CPU Utilization %
                         </span>
                         <span className="flex items-center gap-1.5">
-                          <span className="w-2.5 h-2.5 rounded-full bg-[#FF453A]" />
+                          <span className="w-2.5 h-2.5 rounded-full bg-danger" />
                           Context Switches
                         </span>
                       </div>
@@ -2178,7 +2177,7 @@ export default function App() {
             </div>
             <div className="px-4 py-2.5 border-b border-neutral-ui/12">
               <a href={WINDOWS_SOURCE_URL} download="windows-c11-project.zip"
-                className="inline-flex items-center gap-1.5 rounded-full bg-[var(--primary-action)] text-white px-3 py-2 text-xs font-semibold">
+                className="inline-flex items-center gap-1.5 rounded-full bg-[var(--primary-action)] text-on-brand px-3 py-2 text-xs font-semibold">
                 <Download className="w-3.5 h-3.5" />
                 Download all 8 files (ZIP)
               </a>
@@ -2197,7 +2196,7 @@ export default function App() {
                     }}
                     className={`w-full text-left px-3.5 py-2.5 rounded-xl transition-all cursor-pointer ${
                       selectedFile === f.name
-                        ? 'bg-[#0A84FF]/30 border border-[#0A84FF]/50 text-ink'
+                        ? 'bg-brand/30 border border-brand/50 text-ink'
                         : 'hover:bg-neutral-ui/8 text-muted border border-transparent'
                     }`}
                   >
@@ -2226,7 +2225,7 @@ export default function App() {
                     <a
                       href={`/windows-c-project/${selectedFile}`}
                       download={selectedFile}
-                      className="h-8 px-3 rounded-full bg-[#0A84FF]/30 hover:bg-[#0A84FF]/45 border border-[#0A84FF]/50 text-xs font-semibold inline-flex items-center gap-1.5 text-ink"
+                      className="h-8 px-3 rounded-full bg-brand/30 hover:bg-brand/45 border border-brand/50 text-xs font-semibold inline-flex items-center gap-1.5 text-ink"
                     >
                       <Download className="w-3.5 h-3.5" />
                       <span>Download</span>

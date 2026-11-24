@@ -6,48 +6,69 @@
   --color-neutral-ui: var(--neutral-ui);
   --color-info: var(--info);
   --color-accent: var(--accent);
+  --color-brand: var(--primary-action);
+  --color-on-brand: var(--on-primary-action);
   --color-success: var(--success);
+  --color-warning: var(--warning);
   --color-danger: var(--danger);
 }
 
+/*
+ * "Signal" theme: graphite surfaces, one teal accent, amber as the secondary
+ * data colour. Every text pair below is WCAG 2.2 AA (4.5:1+) on --panel and
+ * --page (ratios measured with the WCAG formula, Nov 2026).
+ */
 :root {
   color-scheme: dark;
-  --page: #101625;
-  --panel: #181f32;
-  --panel-inset: #11192b;
-  --ink: #eef2fd;
-  --muted: #b2bfd7;
-  --neutral-ui: #d1ddfa;
-  --stroke: #33405a;
-  --primary-action: #244fc9;
-  --info: #8cd9ff;
-  --accent: #d29bff;
-  --success: #65df96;
-  --danger: #ffaba6;
-  --timeline-idle: #37445d;
-  --shadow: 0 8px 24px #04071240;
+  --page: #0d1317;
+  --panel: #151d23;
+  --panel-inset: #0f161b;
+  --ink: #eaf0f2;
+  --muted: #a3b3bb;
+  --neutral-ui: #c6d4da;
+  --stroke: #2a3943;
+  --primary-action: #0f766e;
+  --on-primary-action: #ffffff;
+  --info: #7cc4f5;
+  --accent: #4fd1c5;
+  --success: #6fdc9a;
+  --warning: #f2b950;
+  --danger: #ff9c94;
+  --timeline-idle: #34444f;
+  --timeline-label: #0d1317;
+  --focus-ring: #f2b950;
+  --shadow: 0 8px 24px #02060940;
 }
 
 :root[data-theme='light'] {
   color-scheme: light;
-  --page: #f3f6fb;
+  --page: #f4f6f5;
   --panel: #ffffff;
-  --panel-inset: #eef3fb;
-  --ink: #17243d;
-  --muted: #4c5e78;
-  --neutral-ui: #3e5275;
-  --stroke: #d7e0ee;
-  --info: #175ca3;
-  --accent: #7535ad;
+  --panel-inset: #edf2f1;
+  --ink: #14212a;
+  --muted: #4b5d66;
+  --neutral-ui: #3c505a;
+  --stroke: #d5dfe0;
+  --primary-action: #0f766e;
+  --on-primary-action: #ffffff;
+  --info: #1b5e96;
+  --accent: #0f6f66;
   --success: #146b39;
-  --danger: #a82125;
-  --timeline-idle: #d3deef;
-  --shadow: 0 8px 24px #1b366611;
+  --warning: #8a5a00;
+  --danger: #b42318;
+  --timeline-idle: #d3dfe1;
+  --timeline-label: #0d1317;
+  --focus-ring: #0f6f66;
+  --shadow: 0 8px 24px #14212a14;
 }
 
 html {
   scroll-behavior: smooth;
   font-family: system-ui, sans-serif;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--accent) 35%, transparent);
 }
 
 body {
@@ -80,13 +101,17 @@ body {
   background: var(--panel-inset);
 }
 
-button:focus-visible {
-  outline: 2px solid var(--info);
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--focus-ring);
   outline-offset: 3px;
 }
 
 .timeline-label {
-  color: #101625;
+  color: var(--timeline-label);
 }
 
 .timeline-playhead {
