@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
   BarChart3,
@@ -107,16 +107,26 @@ function getNextSuggestedPid(list: ProcessInput[]): string {
   return `P${idx}`;
 }
 
-function AnimatedNumber({ value, decimals = 2, suffix = '' }: { value: number; decimals?: number; suffix?: string }) {
+const AnimatedNumber = React.memo(function AnimatedNumber({
+  value,
+  decimals = 2,
+  suffix = '',
+}: {
+  value: number;
+  decimals?: number;
+  suffix?: string;
+}) {
   const safeVal = Number.isFinite(value) ? value : 0;
   const [display, setDisplay] = useState(safeVal);
-  const prevRef = useRef(safeVal);
+  // Always animate from the *currently displayed* value so updates that land
+  // mid-tween continue smoothly instead of jumping to the stale target.
+  const displayRef = useRef(safeVal);
 
   useEffect(() => {
-    const start = prevRef.current;
+    const start = displayRef.current;
     const end = safeVal;
-    prevRef.current = safeVal;
     if (Math.abs(end - start) < 0.0001) {
+      displayRef.current = end;
       setDisplay(end);
       return;
     }
@@ -126,7 +136,9 @@ function AnimatedNumber({ value, decimals = 2, suffix = '' }: { value: number; d
     const step = (now: number) => {
       const p = Math.min(1, (now - startTime) / duration);
       const eased = 1 - Math.pow(1 - p, 3);
-      setDisplay(start + (end - start) * eased);
+      const v = start + (end - start) * eased;
+      displayRef.current = p < 1 ? v : end;
+      setDisplay(displayRef.current);
       if (p < 1) raf = requestAnimationFrame(step);
     };
     raf = requestAnimationFrame(step);
@@ -139,9 +151,17 @@ function AnimatedNumber({ value, decimals = 2, suffix = '' }: { value: number; d
       {suffix}
     </span>
   );
-}
+});
 
-function LiveSparkChart({ data, stroke, gradientId }: { data: number[]; stroke: string; gradientId: string }) {
+const LiveSparkChart = React.memo(function LiveSparkChart({
+  data,
+  stroke,
+  gradientId,
+}: {
+  data: number[];
+  stroke: string;
+  gradientId: string;
+}) {
   const w = 520;
   const h = 190;
   const padLeft = 36;
@@ -183,7 +203,7 @@ function LiveSparkChart({ data, stroke, gradientId }: { data: number[]; stroke: 
       <path d={linePath} fill="none" stroke={stroke} strokeWidth="2.5" strokeLinejoin="round" strokeLinecap="round" />
     </svg>
   );
-}
+});
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<TabKey>('scheduler');
@@ -247,6 +267,8 @@ export default function App() {
   const [playTick, setPlayTick] = useState<number | null>(null);
   const playProgressRef = useRef(0);
   const rafRef = useRef<number | null>(null);
+  const playheadRef = useRef<HTMLDivElement | null>(null);
+  const tickLabelRef = useRef<HTMLSpanElement | null>(null);
 
   const [backendConnected, setBackendConnected] = useState(false);
   const [autoConnect, setAutoConnect] = useState(window.location.protocol === 'http:');
@@ -282,6 +304,7 @@ export default function App() {
   const [codeDrawerOpen, setCodeDrawerOpen] = useState(false);
   const [selectedFile, setSelectedFile] = useState<string>(C_PROJECT_FILES[0].name);
   const [fileContents, setFileContents] = useState<Record<string, string>>({});
+  const fileCacheRef = useRef<Record<string, string>>({});
   const [fileLoading, setFileLoading] = useState(false);
   const [fileError, setFileError] = useState<string | null>(null);
   const [fileReloadNonce, setFileReloadNonce] = useState(0);
@@ -486,11 +509,12 @@ export default function App() {
     return () => window.clearInterval(timer);
   }, [activeTab, backendConnected, fetchOsProcesses]);
 
-  const selectedSource = fileContents[selectedFile];
-
   // Load the selected C source file on demand.
+  // A ref-based cache guards re-fetches so writing to `fileContents` after a
+  // successful load (including after Retry) never re-triggers the effect.
   useEffect(() => {
-    if (!codeDrawerOpen || selectedSource) return;
+    if (!codeDrawerOpen) return;
+    if (fileCacheRef.current[selectedFile] !== undefined) return;
 
     const controller = new AbortController();
     setFileLoading(true);
@@ -507,6 +531,7 @@ export default function App() {
     })
       .then((text) => {
         if (controller.signal.aborted) return;
+        fileCacheRef.current[selectedFile] = text;
         setFileLoading(false);
         setFileContents((prev) => ({ ...prev, [selectedFile]: text }));
       })
@@ -522,7 +547,7 @@ export default function App() {
       });
 
     return () => controller.abort();
-  }, [codeDrawerOpen, selectedFile, selectedSource, fileReloadNonce]);
+  }, [codeDrawerOpen, selectedFile, fileReloadNonce]);
 
   // Close C11 source modal on Escape key
   useEffect(() => {
@@ -687,6 +712,23 @@ export default function App() {
     }
   }, [activeTab, executeCompareAll, lastComparedSignature, processes.length, workloadSignature]);
 
+  /** Keep the replay playhead line and tick label smooth via direct DOM writes. */
+  const syncPlayheadDom = useCallback((progress: number, makespan: number) => {
+    const frac = makespan > 0 ? Math.min(1, Math.max(0, progress / makespan)) : 1;
+    if (playheadRef.current) {
+      playheadRef.current.style.left = `${frac * 100}%`;
+    }
+    if (tickLabelRef.current) {
+      tickLabelRef.current.textContent = `Tick: ${progress.toFixed(1)} / ${makespan}`;
+    }
+  }, []);
+
+  // Re-sync the playhead/label when replay state changes outside the rAF loop
+  // (pause, reset, fresh simulation result, or remount after a tab switch).
+  useLayoutEffect(() => {
+    syncPlayheadDom(playProgressRef.current, simResult.metrics.makespan);
+  }, [playTick, isPlaying, isSimulating, simResult, activeTab, syncPlayheadDom]);
+
   const handleTogglePlay = () => {
     const makespan = simResult.metrics.makespan;
     if (!makespan || !simResult.processes.length) {
@@ -700,26 +742,31 @@ export default function App() {
     setIsPlaying(true);
     if (playProgressRef.current >= makespan) playProgressRef.current = 0;
     let lastTs = performance.now();
-    const speed = Math.max(2.2, makespan / 8);
-    let displayedTick = -1;
-    let lastPaint = -Infinity;
+    // Replay always takes ~6 seconds regardless of makespan (clamped so tiny
+    // simulations stay watchable and huge ones don't take minutes).
+    const speed = Math.max(2.5, makespan / 6);
+    let lastUiTs = 0;
 
     const frame = (ts: number) => {
       const dt = Math.min(0.1, (ts - lastTs) / 1000);
       lastTs = ts;
       playProgressRef.current += dt * speed;
-      if (playProgressRef.current >= makespan) {
+      const p = playProgressRef.current;
+      if (p >= makespan) {
         playProgressRef.current = makespan;
+        syncPlayheadDom(makespan, makespan);
         setPlayTick(makespan);
         stopReplay();
         pushToast('Gantt replay finished', '#64D2FF');
         return;
       }
-      const tick = Math.floor(playProgressRef.current * 10) / 10;
-      if (tick !== displayedTick && ts - lastPaint >= 32) {
-        displayedTick = tick;
-        lastPaint = ts;
-        setPlayTick(tick);
+      syncPlayheadDom(p, makespan);
+      // Throttle React state (~12fps): the playhead moves smoothly via the DOM
+      // while the heavyweight panels only re-render on sampled tick changes.
+      if (ts - lastUiTs >= 80) {
+        lastUiTs = ts;
+        const tickInt = Math.floor(p);
+        setPlayTick((prev) => (prev === tickInt ? prev : tickInt));
       }
       rafRef.current = requestAnimationFrame(frame);
     };
@@ -903,8 +950,22 @@ export default function App() {
         finished: true,
       };
     }
-    const idx = Math.min(simResult.ticks.length - 1, Math.floor(playTick));
-    return { ...simResult.ticks[idx], finished: false };
+    // Snapshots can be sparse (the engine fast-forwards pure-idle gaps), so
+    // binary-search for the last snapshot at or before the current tick.
+    const arr = simResult.ticks;
+    let lo = 0;
+    let hi = arr.length - 1;
+    let idx = 0;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (arr[mid].tick <= playTick) {
+        idx = mid;
+        lo = mid + 1;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    return { ...arr[idx], finished: false };
   }, [playTick, simResult]);
 
   const navItems: { key: TabKey; label: string; icon: React.ReactNode }[] = [
@@ -1321,7 +1382,7 @@ export default function App() {
                       {activeSnap
                         ? activeSnap.finished
                           ? `Replay Complete (Tick ${activeSnap.tick}) · Ready Queue: Empty · Completed: ${activeSnap.completed}/${simResult.processes.length}`
-                          : `Live Tick ${activeSnap.tick} · Ready Queue: ${
+                          : `Live Tick ${Math.floor(playTick ?? 0)} · Ready Queue: ${
                               activeSnap.readyQueue.length ? activeSnap.readyQueue.join(', ') : 'Empty'
                             } · Completed: ${activeSnap.completed}/${simResult.processes.length}`
                         : 'Press Play Replay to animate processes moving across cores in real time'}
@@ -1413,7 +1474,9 @@ export default function App() {
                     {isSimulating ? (
                       <span role="status">Building timeline…</span>
                     ) : (
-                      <>Tick: {playTick !== null ? playTick.toFixed(1) : '0.0'} / {simResult.metrics.makespan}</>
+                      <span ref={tickLabelRef}>
+                        Tick: 0.0 / {simResult.metrics.makespan}
+                      </span>
                     )}
                   </div>
                 </div>
@@ -1424,8 +1487,10 @@ export default function App() {
                       <GanttTracks result={simResult} colors={PROC_SOLID} colorIndex={pidColorIndex} />
                       {playTick !== null && (
                         <div className="absolute left-[88px] right-0 top-0 bottom-7 pointer-events-none z-20" aria-hidden="true">
-                          <div className="timeline-playhead absolute inset-y-0 w-0.5 -translate-x-1/2"
-                            style={{ left: `${(playTick / simResult.metrics.makespan) * 100}%` }} />
+                          <div
+                            ref={playheadRef}
+                            className="timeline-playhead absolute inset-y-0 w-0.5 -translate-x-1/2"
+                          />
                         </div>
                       )}
                     </div>
