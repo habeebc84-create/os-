@@ -25,6 +25,7 @@ import {
   clampInt,
   compareAllAlgorithms,
   CompareResponse,
+  GanttSegment,
   PriorityMode,
   ProcessInput,
   runMultiCoreSimulation,
@@ -131,16 +132,26 @@ function getNextSuggestedPid(list: ProcessInput[]): string {
   return `P${idx}`;
 }
 
-function AnimatedNumber({ value, decimals = 2, suffix = '' }: { value: number; decimals?: number; suffix?: string }) {
+const AnimatedNumber = React.memo(function AnimatedNumber({
+  value,
+  decimals = 2,
+  suffix = '',
+}: {
+  value: number;
+  decimals?: number;
+  suffix?: string;
+}) {
   const safeVal = Number.isFinite(value) ? value : 0;
   const [display, setDisplay] = useState(safeVal);
-  const prevRef = useRef(safeVal);
+  // Always animate from the *currently displayed* value so updates that land
+  // mid-tween continue smoothly instead of jumping to the stale target.
+  const displayRef = useRef(safeVal);
 
   useEffect(() => {
-    const start = prevRef.current;
+    const start = displayRef.current;
     const end = safeVal;
-    prevRef.current = safeVal;
     if (Math.abs(end - start) < 0.0001) {
+      displayRef.current = end;
       setDisplay(end);
       return;
     }
@@ -150,7 +161,9 @@ function AnimatedNumber({ value, decimals = 2, suffix = '' }: { value: number; d
     const step = (now: number) => {
       const p = Math.min(1, (now - startTime) / duration);
       const eased = 1 - Math.pow(1 - p, 3);
-      setDisplay(start + (end - start) * eased);
+      const v = start + (end - start) * eased;
+      displayRef.current = p < 1 ? v : end;
+      setDisplay(displayRef.current);
       if (p < 1) raf = requestAnimationFrame(step);
     };
     raf = requestAnimationFrame(step);
@@ -163,9 +176,17 @@ function AnimatedNumber({ value, decimals = 2, suffix = '' }: { value: number; d
       {suffix}
     </span>
   );
-}
+});
 
-function LiveSparkChart({ data, stroke, gradientId }: { data: number[]; stroke: string; gradientId: string }) {
+const LiveSparkChart = React.memo(function LiveSparkChart({
+  data,
+  stroke,
+  gradientId,
+}: {
+  data: number[];
+  stroke: string;
+  gradientId: string;
+}) {
   const w = 520;
   const h = 190;
   const padLeft = 36;
@@ -207,13 +228,15 @@ function LiveSparkChart({ data, stroke, gradientId }: { data: number[]; stroke: 
       <path d={linePath} fill="none" stroke={stroke} strokeWidth="2.5" strokeLinejoin="round" strokeLinecap="round" />
     </svg>
   );
-}
+});
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<TabKey>('scheduler');
-  const [parallax, setParallax] = useState({ x: 0, y: 0 });
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const toastTimersRef = useRef<number[]>([]);
+  const orb1Ref = useRef<HTMLDivElement | null>(null);
+  const orb2Ref = useRef<HTMLDivElement | null>(null);
+  const orb3Ref = useRef<HTMLDivElement | null>(null);
   const copyTimerRef = useRef<number | null>(null);
 
   // Scheduler state
@@ -253,6 +276,8 @@ export default function App() {
   const [playTick, setPlayTick] = useState<number | null>(null);
   const playProgressRef = useRef(0);
   const rafRef = useRef<number | null>(null);
+  const playheadRef = useRef<HTMLDivElement | null>(null);
+  const tickLabelRef = useRef<HTMLSpanElement | null>(null);
 
   // Backend configuration & live hardware monitor state
   const backendBaseUrl = useMemo(() => resolveBackendBaseUrl(), []);
@@ -301,6 +326,7 @@ export default function App() {
   const [codeDrawerOpen, setCodeDrawerOpen] = useState(false);
   const [selectedFile, setSelectedFile] = useState<string>(C_PROJECT_FILES[0].name);
   const [fileContents, setFileContents] = useState<Record<string, string>>({});
+  const fileCacheRef = useRef<Record<string, string>>({});
   const [fileLoading, setFileLoading] = useState(false);
   const [fileError, setFileError] = useState<string | null>(null);
   const [fileReloadNonce, setFileReloadNonce] = useState(0);
@@ -326,17 +352,37 @@ export default function App() {
     };
   }, []);
 
-  // Subtle mouse-move parallax for ambient orbs
+  // Subtle mouse-move parallax for ambient orbs. Updated imperatively through
+  // refs (rAF-throttled) so mouse movement never triggers React re-renders.
   useEffect(() => {
     if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    let raf = 0;
+    const apply = (x: number, y: number) => {
+      if (orb1Ref.current) {
+        orb1Ref.current.style.marginLeft = `${x * 18}px`;
+        orb1Ref.current.style.marginTop = `${y * 18}px`;
+      }
+      if (orb2Ref.current) {
+        orb2Ref.current.style.marginLeft = `${x * 26}px`;
+        orb2Ref.current.style.marginTop = `${y * 26}px`;
+      }
+      if (orb3Ref.current) {
+        orb3Ref.current.style.marginLeft = `${x * 14}px`;
+        orb3Ref.current.style.marginTop = `${y * 14}px`;
+      }
+    };
     const onMove = (e: MouseEvent) => {
-      setParallax({
-        x: (e.clientX / window.innerWidth - 0.5) * 2,
-        y: (e.clientY / window.innerHeight - 0.5) * 2,
+      if (raf) return;
+      raf = requestAnimationFrame(() => {
+        raf = 0;
+        apply((e.clientX / window.innerWidth - 0.5) * 2, (e.clientY / window.innerHeight - 0.5) * 2);
       });
     };
     window.addEventListener('mousemove', onMove, { passive: true });
-    return () => window.removeEventListener('mousemove', onMove);
+    return () => {
+      window.removeEventListener('mousemove', onMove);
+      if (raf) cancelAnimationFrame(raf);
+    };
   }, []);
 
   // Fetch hardware metadata from C11 backend when reachable
@@ -503,10 +549,13 @@ export default function App() {
     return () => window.clearInterval(interval);
   }, [activeTab, backendConnected, fetchOsProcesses]);
 
-  // Load C source files on demand when drawer opens (with res.ok check & AbortController)
+  // Load C source files on demand when drawer opens (with res.ok check & AbortController).
+  // A ref-based cache guards re-fetches: `fileContents` must NOT be a dependency —
+  // writing to it after a successful load (e.g. after Retry) would otherwise
+  // re-trigger this effect in an infinite fetch loop.
   useEffect(() => {
     if (!codeDrawerOpen) return;
-    if (fileContents[selectedFile] && fileReloadNonce === 0) return;
+    if (fileCacheRef.current[selectedFile] !== undefined && fileReloadNonce === 0) return;
 
     const controller = new AbortController();
     setFileLoading(true);
@@ -523,6 +572,7 @@ export default function App() {
           throw new Error(`Source file "${selectedFile}" was not found on the server.`);
         }
         if (!controller.signal.aborted) {
+          fileCacheRef.current[selectedFile] = text;
           setFileContents((prev) => ({ ...prev, [selectedFile]: text }));
         }
       })
@@ -538,7 +588,7 @@ export default function App() {
       });
 
     return () => controller.abort();
-  }, [codeDrawerOpen, selectedFile, fileContents, fileReloadNonce]);
+  }, [codeDrawerOpen, selectedFile, fileReloadNonce]);
 
   // Close C11 source modal on Escape key
   useEffect(() => {
@@ -560,6 +610,16 @@ export default function App() {
     });
     return map;
   }, [processes, simResult]);
+
+  const ganttByCore = useMemo(() => {
+    const map = new Map<number, GanttSegment[]>();
+    for (const s of simResult.gantt) {
+      const arr = map.get(s.core);
+      if (arr) arr.push(s);
+      else map.set(s.core, [s]);
+    }
+    return map;
+  }, [simResult]);
 
   const stopReplay = useCallback(() => {
     setIsPlaying(false);
@@ -688,6 +748,23 @@ export default function App() {
     }
   }, [activeTab, executeCompareAll, lastComparedSignature, processes.length, workloadSignature]);
 
+  /** Keep the replay playhead line and tick label perfectly smooth via direct DOM writes. */
+  const syncPlayheadDom = useCallback((progress: number, makespan: number) => {
+    const frac = makespan > 0 ? Math.min(1, progress / makespan) : 1;
+    if (playheadRef.current) {
+      playheadRef.current.style.left = `calc(88px + (100% - 88px) * ${frac})`;
+    }
+    if (tickLabelRef.current) {
+      tickLabelRef.current.textContent = `Tick: ${progress.toFixed(1)} / ${makespan}`;
+    }
+  }, []);
+
+  // Re-sync the playhead/label when replay state changes outside the rAF loop
+  // (pause, reset, fresh simulation result, or remount after a tab switch).
+  useEffect(() => {
+    syncPlayheadDom(playProgressRef.current, simResult.metrics.makespan);
+  }, [playTick, isPlaying, simResult, activeTab, syncPlayheadDom]);
+
   const handleTogglePlay = () => {
     const makespan = simResult.metrics.makespan;
     if (!makespan || !simResult.processes.length) {
@@ -701,20 +778,32 @@ export default function App() {
     setIsPlaying(true);
     if (playProgressRef.current >= makespan) playProgressRef.current = 0;
     let lastTs = performance.now();
-    const speed = Math.max(2.2, Math.min(5.5, makespan / 5));
+    // Replay always takes ~6 seconds regardless of makespan (clamped so tiny
+    // simulations stay watchable and huge ones don't take minutes).
+    const speed = Math.max(2.5, makespan / 6);
+    let lastUiTs = 0;
 
     const frame = (ts: number) => {
       const dt = Math.min(0.1, (ts - lastTs) / 1000);
       lastTs = ts;
       playProgressRef.current += dt * speed;
-      if (playProgressRef.current >= makespan) {
+      const p = playProgressRef.current;
+      if (p >= makespan) {
         playProgressRef.current = makespan;
+        syncPlayheadDom(makespan, makespan);
         setPlayTick(makespan);
         stopReplay();
         pushToast('Gantt replay finished', '#64D2FF');
         return;
       }
-      setPlayTick(playProgressRef.current);
+      syncPlayheadDom(p, makespan);
+      // Throttle React state (~12fps): the playhead moves smoothly via the DOM
+      // while the heavyweight panels only re-render on sampled tick changes.
+      if (ts - lastUiTs >= 80) {
+        lastUiTs = ts;
+        const tickInt = Math.floor(p);
+        setPlayTick((prev) => (prev === tickInt ? prev : tickInt));
+      }
       rafRef.current = requestAnimationFrame(frame);
     };
     rafRef.current = requestAnimationFrame(frame);
@@ -912,8 +1001,22 @@ export default function App() {
         finished: true,
       };
     }
-    const idx = Math.min(simResult.ticks.length - 1, Math.floor(playTick));
-    return { ...simResult.ticks[idx], finished: false };
+    // Snapshots can be sparse (the engine fast-forwards pure-idle gaps), so
+    // binary-search for the last snapshot at or before the current tick.
+    const arr = simResult.ticks;
+    let lo = 0;
+    let hi = arr.length - 1;
+    let idx = 0;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (arr[mid].tick <= playTick) {
+        idx = mid;
+        lo = mid + 1;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    return { ...arr[idx], finished: false };
   }, [playTick, simResult]);
 
   const navItems: { key: TabKey; label: string; icon: React.ReactNode }[] = [
@@ -933,28 +1036,19 @@ export default function App() {
       {/* Ambient Floating Orbs with Parallax */}
       <div className="fixed inset-0 z-0 overflow-hidden pointer-events-none" aria-hidden="true">
         <div
+          ref={orb1Ref}
           className="absolute -top-28 -left-20 w-[540px] h-[540px] rounded-full blur-[110px] opacity-40 orb-anim-1 transition-transform duration-500"
-          style={{
-            background: 'radial-gradient(circle, #0A84FF, transparent 70%)',
-            marginLeft: parallax.x * 18,
-            marginTop: parallax.y * 18,
-          }}
+          style={{ background: 'radial-gradient(circle, #0A84FF, transparent 70%)' }}
         />
         <div
+          ref={orb2Ref}
           className="absolute -bottom-36 left-[32%] w-[560px] h-[560px] rounded-full blur-[115px] opacity-40 orb-anim-2 transition-transform duration-500"
-          style={{
-            background: 'radial-gradient(circle, #BF5AF2, transparent 70%)',
-            marginLeft: parallax.x * 26,
-            marginTop: parallax.y * 26,
-          }}
+          style={{ background: 'radial-gradient(circle, #BF5AF2, transparent 70%)' }}
         />
         <div
+          ref={orb3Ref}
           className="absolute top-[16%] -right-28 w-[480px] h-[480px] rounded-full blur-[110px] opacity-35 orb-anim-3 transition-transform duration-500"
-          style={{
-            background: 'radial-gradient(circle, #FF9F0A, transparent 70%)',
-            marginLeft: parallax.x * 14,
-            marginTop: parallax.y * 14,
-          }}
+          style={{ background: 'radial-gradient(circle, #FF9F0A, transparent 70%)' }}
         />
       </div>
 
@@ -1359,7 +1453,7 @@ export default function App() {
                       {activeSnap
                         ? activeSnap.finished
                           ? `Replay Complete (Tick ${activeSnap.tick}) · Ready Queue: Empty · Completed: ${activeSnap.completed}/${simResult.processes.length}`
-                          : `Live Tick ${activeSnap.tick} · Ready Queue: ${
+                          : `Live Tick ${Math.floor(playTick ?? 0)} · Ready Queue: ${
                               activeSnap.readyQueue.length ? activeSnap.readyQueue.join(', ') : 'Empty'
                             } · Completed: ${activeSnap.completed}/${simResult.processes.length}`
                         : 'Press Play Replay to animate processes moving across cores in real time'}
@@ -1448,19 +1542,21 @@ export default function App() {
                     </p>
                   </div>
                   <div className="text-xs font-bold text-[#64D2FF] tabular-nums">
-                    Tick: {playTick !== null ? playTick.toFixed(1) : '0.0'} / {simResult.metrics.makespan}
+                    <span ref={tickLabelRef}>
+                      Tick: 0.0 / {simResult.metrics.makespan}
+                    </span>
                   </div>
                 </div>
 
                 {simResult.metrics.makespan > 0 ? (
                   <div className="overflow-x-auto pb-2">
                     <div className="relative min-w-[660px]">
-                      {/* Moving Glowing Playhead */}
+                      {/* Moving Glowing Playhead (positioned imperatively via ref for 60fps smoothness) */}
                       {playTick !== null && simResult.metrics.makespan > 0 && (
                         <div
+                          ref={playheadRef}
                           className="absolute top-0 bottom-7 w-[3px] rounded-full pointer-events-none z-20"
                           style={{
-                            left: `calc(88px + (100% - 88px) * ${Math.min(1, playTick / simResult.metrics.makespan)})`,
                             background: 'linear-gradient(180deg, #fff, #64D2FF, #0A84FF)',
                             boxShadow: '0 0 18px #64D2FF, 0 0 32px #0A84FF',
                           }}
@@ -1468,7 +1564,7 @@ export default function App() {
                       )}
 
                       {Array.from({ length: simResult.cores }, (_, c) => {
-                        const segs = simResult.gantt.filter((s) => s.core === c);
+                        const segs = ganttByCore.get(c) ?? [];
                         const makespan = Math.max(1, simResult.metrics.makespan);
                         return (
                           <div key={c} className="grid grid-cols-[76px_1fr] items-center gap-3 mb-2.5">
