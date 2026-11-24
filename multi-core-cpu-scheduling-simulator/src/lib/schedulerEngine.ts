@@ -248,6 +248,18 @@ export function runMultiCoreSimulation(
     segments.push(segment);
   };
 
+  /** Merge a contiguous idle range [from, to) into the Gantt chart (fast-forward path). */
+  const recordGanttRange = (coreId: number, from: number, to: number) => {
+    const last = lastSegments[coreId];
+    if (last && last.end === from && last.idle && last.pid === 'IDLE') {
+      last.end = to;
+      return;
+    }
+    const segment = { core: coreId, pid: 'IDLE', idle: true, start: from, end: to };
+    lastSegments[coreId] = segment;
+    segments.push(segment);
+  };
+
   for (let t = 0; t <= SIM_LIMITS.MAX_SIM_TICKS; t++) {
     // 1. Arrivals
     for (let i = 0; i < procs.length; i++) {
@@ -271,6 +283,46 @@ export function runMultiCoreSimulation(
         truncated = true;
       }
       break;
+    }
+
+    // 3.5 Fast-forward pure-idle gaps: when nothing is running or ready and no
+    // RR requeue is pending, no execution can happen until the next arrival.
+    // Bulk-advancing time yields identical processes, Gantt segments, and
+    // metrics while skipping per-tick bookkeeping.
+    if (readyQueue.length === 0 && rrRequeue.length === 0) {
+      let allIdle = true;
+      for (let c = 0; c < numCores; c++) {
+        if (cores[c].assignedProc >= 0) {
+          allIdle = false;
+          break;
+        }
+      }
+      if (allIdle) {
+        let nextArrival = -1;
+        for (let i = 0; i < procs.length; i++) {
+          if (procs[i].state === 'NEW' && (nextArrival < 0 || procs[i].arrival < nextArrival)) {
+            nextArrival = procs[i].arrival;
+          }
+        }
+        if (nextArrival > t) {
+          const target = Math.min(nextArrival, SIM_LIMITS.MAX_SIM_TICKS);
+          const gap = target - t;
+          if (includeTimeline) {
+            ticks.push({
+              tick: t,
+              completed: completedCount,
+              cores: cores.map(() => 'IDLE'),
+              readyQueue: [],
+            });
+          }
+          for (let c = 0; c < numCores; c++) {
+            cores[c].idleTime += gap;
+            if (includeTimeline) recordGanttRange(c, t, target);
+          }
+          t = target - 1;
+          continue;
+        }
+      }
     }
 
     // 4. Dispatch to free cores
