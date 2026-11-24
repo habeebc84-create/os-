@@ -1351,7 +1351,7 @@ export default function App() {
                                   setProcesses(next);
                                   setNewPid(getNextSuggestedPid(next));
                                 }}
-                                className="text-danger hover:text-danger p-1 cursor-pointer"
+                                className="text-danger hover:text-danger inline-flex h-9 w-9 items-center justify-center rounded-lg hover:bg-(--panel-inset) cursor-pointer"
                                 title={`Remove ${p.pid}`}
                                 aria-label={`Remove process ${p.pid}`}
                               >
@@ -1474,9 +1474,7 @@ export default function App() {
                     {isSimulating ? (
                       <span role="status">Building timeline…</span>
                     ) : (
-                      <span ref={tickLabelRef}>
-                        Tick: 0.0 / {simResult.metrics.makespan}
-                      </span>
+                      <span ref={tickLabelRef} className="tabular-nums" />
                     )}
                   </div>
                 </div>
@@ -1878,7 +1876,7 @@ export default function App() {
                         ] as const).map(({ key, label, padding, defaultDir }) => (
                           <th key={key} scope="col" className={`py-2.5 ${padding}`}
                             aria-sort={procSort.key === key ? (procSort.dir === 1 ? 'ascending' : 'descending') : undefined}>
-                            <button type="button" className="cursor-pointer text-left hover:text-ink"
+                            <button type="button" className="cursor-pointer text-left hover:text-ink py-2 -my-2"
                               onClick={() => setProcSort((sort) => ({
                                 key,
                                 dir: sort.key === key ? (sort.dir === 1 ? -1 : 1) : defaultDir,
