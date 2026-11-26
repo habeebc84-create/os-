@@ -16,11 +16,46 @@ export interface LiveMetrics {
   ramTotalMB: number;
 }
 
+/** ready = UI waiting for input; exited = handed off to another/existing process. */
+export type LaunchReadyState = 'ready' | 'timeout' | 'no-input-idle' | 'exited';
+
 export interface LaunchResult {
   launched: boolean;
   pid: number;
   pinnedCore: number;
+  app?: string;
   message: string;
+  /** Fields below come from agents built on or after 26 Nov 2026. */
+  requestedCore?: number;
+  openMs?: number;
+  readyState?: LaunchReadyState;
+  launchedAt?: number;
+  affinityCores?: number[];
+  /** Per-logical-core busy %, or null when no earlier sample existed. */
+  coresBefore?: number[] | null;
+  coresDuring?: number[] | null;
+}
+
+export interface LaunchStats {
+  pid: number;
+  app: string;
+  running: boolean;
+  exitCode: number;
+  requestedCore: number;
+  openMs: number;
+  readyState: LaunchReadyState;
+  uptimeMs: number;
+  cpuPercent: number;
+  cpuTimeMs: number;
+  memoryMB: number;
+  peakMemoryMB: number;
+  threads: number;
+  affinityCores: number[];
+  cores: number[] | null;
+}
+
+export interface CoreUsageResponse {
+  cores: number[] | null;
 }
 
 function getBackendUrl(): URL {

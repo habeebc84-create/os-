@@ -638,6 +638,20 @@ static void handle_processes(SOCKET sock) {
     free(plist);
 }
 
+static void append_int_array(StrBuf *sb, const int *values, int count) {
+    sb_append(sb, "[");
+    for (int i = 0; i < count; i++) sb_appendf(sb, i ? ",%d" : "%d", values[i]);
+    sb_append(sb, "]");
+}
+
+/* null when there was no previous sample to compare against */
+static void append_core_usage(StrBuf *sb, const CoreUsage *cu) {
+    if (!cu->valid) { sb_append(sb, "null"); return; }
+    sb_append(sb, "[");
+    for (int i = 0; i < cu->count; i++) sb_appendf(sb, i ? ",%.1f" : "%.1f", cu->usage[i]);
+    sb_append(sb, "]");
+}
+
 static void handle_launch(SOCKET sock, const char *body) {
     const char *end = body + strlen(body);
     char app[64] = {0};
@@ -669,8 +683,69 @@ static void handle_launch(SOCKET sock, const char *body) {
     sb_append_json_str(&sb, lr.app_name[0] ? lr.app_name : app);
     sb_append(&sb, ",\"message\":");
     sb_append_json_str(&sb, lr.message);
+    if (lr.success) {
+        sb_appendf(&sb, ",\"requestedCore\":%d,\"openMs\":%.1f,\"readyState\":", lr.requested_core, lr.open_ms);
+        sb_append_json_str(&sb, lr.ready_state);
+        sb_appendf(&sb, ",\"launchedAt\":%llu,\"affinityCores\":", lr.launched_at_ms);
+        append_int_array(&sb, lr.affinity_cores, lr.affinity_count);
+        sb_append(&sb, ",\"coresBefore\":");
+        append_core_usage(&sb, &lr.cores_before);
+        sb_append(&sb, ",\"coresDuring\":");
+        append_core_usage(&sb, &lr.cores_during);
+    }
     sb_append(&sb, "}");
     send_response(sock, http_code, "application/json; charset=utf-8", NULL, sb.data, sb.len);
+    sb_free(&sb);
+}
+
+/* GET /api/launch/stats?pid=N — only for apps this agent launched. */
+static void handle_launch_stats(SOCKET sock, const char *query) {
+    const char *p = query ? strstr(query, "pid=") : NULL;
+    if (!p || (p != query && p[-1] != '&')) {
+        send_json_error(sock, 400, "Add ?pid= with a PID launched by this agent.");
+        return;
+    }
+    p += 4;
+    char *next;
+    errno = 0;
+    unsigned long pid = strtoul(p, &next, 10);
+    if (next == p || errno == ERANGE || pid == 0 || (*next && *next != '&')) {
+        send_json_error(sock, 400, "PID must be a positive number.");
+        return;
+    }
+    LaunchStats st;
+    if (monitor_get_launch_stats(pid, &st) != 200) {
+        send_json_error(sock, 404, "That PID was not launched by this agent.");
+        return;
+    }
+    StrBuf sb;
+    sb_init(&sb, 1024);
+    sb_appendf(&sb, "{\"pid\":%lu,\"app\":", st.pid);
+    sb_append_json_str(&sb, st.app_name);
+    sb_appendf(&sb, ",\"running\":%s,\"exitCode\":%lu,\"requestedCore\":%d,\"openMs\":%.1f,\"readyState\":",
+               st.running ? "true" : "false", st.exit_code, st.requested_core, st.open_ms);
+    sb_append_json_str(&sb, st.ready_state);
+    sb_appendf(&sb, ",\"uptimeMs\":%.0f,\"cpuPercent\":%.1f,\"cpuTimeMs\":%.1f,\"memoryMB\":%.1f,"
+                    "\"peakMemoryMB\":%.1f,\"threads\":%lu,\"affinityCores\":",
+               st.uptime_ms, st.cpu_percent, st.cpu_time_ms, st.memory_mb, st.peak_memory_mb, st.threads);
+    append_int_array(&sb, st.affinity_cores, st.affinity_count);
+    sb_append(&sb, ",\"cores\":");
+    append_core_usage(&sb, &st.cores);
+    sb_append(&sb, "}");
+    send_response(sock, 200, "application/json; charset=utf-8", NULL, sb.data, sb.len);
+    sb_free(&sb);
+}
+
+/* GET /api/cores — per-logical-core load since the previous sample. */
+static void handle_cores(SOCKET sock) {
+    CoreUsage cu;
+    monitor_get_core_usage(&cu);
+    StrBuf sb;
+    sb_init(&sb, 512);
+    sb_append(&sb, "{\"cores\":");
+    append_core_usage(&sb, &cu);
+    sb_append(&sb, "}");
+    send_response(sock, 200, "application/json; charset=utf-8", NULL, sb.data, sb.len);
     sb_free(&sb);
 }
 
@@ -874,7 +949,8 @@ static DWORD WINAPI client_thread_proc(LPVOID param) {
     }
 
     char *qmark = strchr(path, '?');
-    if (qmark) *qmark = '\0';
+    const char *query = NULL;
+    if (qmark) { *qmark = '\0'; query = qmark + 1; }
 
     if (strcmp(method, "OPTIONS") == 0) {
         /* Compatibility with browsers that send a private-network preflight. */
@@ -898,6 +974,10 @@ static DWORD WINAPI client_thread_proc(LPVOID param) {
         handle_processes(sock);
     } else if (strcmp(method, "POST") == 0 && strcmp(path, "/api/launch") == 0) {
         handle_launch(sock, body);
+    } else if (strcmp(method, "GET") == 0 && strcmp(path, "/api/launch/stats") == 0) {
+        handle_launch_stats(sock, query);
+    } else if (strcmp(method, "GET") == 0 && strcmp(path, "/api/cores") == 0) {
+        handle_cores(sock);
     } else if (strcmp(method, "GET") == 0 && strcmp(path, "/api/report.csv") == 0) {
         handle_report_csv(sock);
     } else {

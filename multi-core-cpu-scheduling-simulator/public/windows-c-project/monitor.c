@@ -30,6 +30,38 @@ static ULARGE_INTEGER g_prev_user;
 static int g_has_cpu_sample = 0;
 static double g_last_cpu_percent = 0.0;
 
+/* ---- Per-core load sampling (NtQuerySystemInformation class 8) ---- */
+typedef struct {
+    LARGE_INTEGER IdleTime;
+    LARGE_INTEGER KernelTime;
+    LARGE_INTEGER UserTime;
+    LARGE_INTEGER DpcTime;
+    LARGE_INTEGER InterruptTime;
+    ULONG InterruptCount;
+} ProcPerfInfo;
+typedef LONG (WINAPI *NtQuerySystemInformationFn)(int, PVOID, ULONG, PULONG);
+static NtQuerySystemInformationFn g_ntqsi = NULL;
+static CRITICAL_SECTION g_core_lock;
+static ProcPerfInfo g_core_prev[MAX_AFFINITY_CORES];
+static int g_core_prev_count = 0;
+
+/* ---- Apps launched by this agent (handles kept open for stats) ---- */
+typedef struct {
+    int used;
+    HANDLE process;
+    unsigned long pid;
+    char app_name[64];
+    int requested_core;
+    double open_ms;
+    char ready_state[24];
+    ULONGLONG start_tick;
+    ULONGLONG last_tick;
+    ULONGLONG last_cpu_100ns;
+} TrackedLaunch;
+static CRITICAL_SECTION g_launch_lock;
+static TrackedLaunch g_launches[MAX_TRACKED_LAUNCHES];
+static int g_launch_next = 0;
+
 static ULARGE_INTEGER filetime_to_ularge(FILETIME ft) {
     ULARGE_INTEGER u;
     u.LowPart  = ft.dwLowDateTime;
@@ -56,8 +88,53 @@ static void trim_whitespace(char *s) {
     }
 }
 
+static int read_core_perf(ProcPerfInfo *buf, int max) {
+    if (!g_ntqsi) return 0;
+    ULONG ret = 0;
+    LONG status = g_ntqsi(8 /* SystemProcessorPerformanceInformation */, buf,
+                          (ULONG)(sizeof(ProcPerfInfo) * (size_t)max), &ret);
+    if (status < 0) return 0;
+    int n = (int)(ret / sizeof(ProcPerfInfo));
+    return n > max ? max : n;
+}
+
+void monitor_get_core_usage(CoreUsage *out) {
+    memset(out, 0, sizeof(CoreUsage));
+    ProcPerfInfo cur[MAX_AFFINITY_CORES];
+    EnterCriticalSection(&g_core_lock);
+    int n = read_core_perf(cur, MAX_AFFINITY_CORES);
+    if (n > 0) {
+        out->count = n;
+        if (g_core_prev_count == n) {
+            out->valid = 1;
+            for (int i = 0; i < n; i++) {
+                /* KernelTime includes IdleTime on Windows */
+                LONGLONG d_idle = cur[i].IdleTime.QuadPart - g_core_prev[i].IdleTime.QuadPart;
+                LONGLONG d_total = (cur[i].KernelTime.QuadPart - g_core_prev[i].KernelTime.QuadPart) +
+                                   (cur[i].UserTime.QuadPart - g_core_prev[i].UserTime.QuadPart);
+                double pct = d_total > 0 ? 100.0 * (double)(d_total - d_idle) / (double)d_total : 0.0;
+                if (pct < 0.0) pct = 0.0;
+                if (pct > 100.0) pct = 100.0;
+                out->usage[i] = pct;
+            }
+        }
+        memcpy(g_core_prev, cur, sizeof(ProcPerfInfo) * (size_t)n);
+        g_core_prev_count = n;
+    }
+    LeaveCriticalSection(&g_core_lock);
+}
+
 void monitor_init(void) {
     InitializeCriticalSection(&g_cpu_lock);
+    InitializeCriticalSection(&g_core_lock);
+    InitializeCriticalSection(&g_launch_lock);
+    HMODULE ntdll = GetModuleHandleA("ntdll.dll");
+    if (ntdll) {
+        FARPROC fn = GetProcAddress(ntdll, "NtQuerySystemInformation");
+        memcpy(&g_ntqsi, &fn, sizeof(g_ntqsi));
+    }
+    CoreUsage warmup;
+    monitor_get_core_usage(&warmup);
     FILETIME idle, kernel, user;
     if (GetSystemTimes(&idle, &kernel, &user)) {
         g_prev_idle   = filetime_to_ularge(idle);
@@ -68,6 +145,14 @@ void monitor_init(void) {
 }
 
 void monitor_cleanup(void) {
+    EnterCriticalSection(&g_launch_lock);
+    for (int i = 0; i < MAX_TRACKED_LAUNCHES; i++) {
+        if (g_launches[i].used && g_launches[i].process) CloseHandle(g_launches[i].process);
+        g_launches[i].used = 0;
+    }
+    LeaveCriticalSection(&g_launch_lock);
+    DeleteCriticalSection(&g_launch_lock);
+    DeleteCriticalSection(&g_core_lock);
     DeleteCriticalSection(&g_cpu_lock);
 }
 
@@ -239,10 +324,126 @@ static int file_exists_win(const char *path) {
     return (attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY));
 }
 
+static void mask_to_cores(DWORD_PTR mask, int *cores, int *count) {
+    *count = 0;
+    for (int core = 0; mask && core < MAX_AFFINITY_CORES; core++, mask >>= 1) {
+        if (mask & 1) cores[(*count)++] = core;
+    }
+}
+
+static ULONGLONG process_cpu_100ns(HANDLE h) {
+    FILETIME c, e, k, u;
+    if (!GetProcessTimes(h, &c, &e, &k, &u)) return 0;
+    return filetime_to_ularge(k).QuadPart + filetime_to_ularge(u).QuadPart;
+}
+
+static unsigned long process_thread_count(unsigned long pid) {
+    unsigned long threads = 0;
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap == INVALID_HANDLE_VALUE) return 0;
+    PROCESSENTRY32 pe;
+    pe.dwSize = sizeof(pe);
+    if (Process32First(snap, &pe)) {
+        do {
+            if ((unsigned long)pe.th32ProcessID == pid) { threads = (unsigned long)pe.cntThreads; break; }
+        } while (Process32Next(snap, &pe));
+    }
+    CloseHandle(snap);
+    return threads;
+}
+
+static unsigned long long unix_now_ms(void) {
+    FILETIME ft;
+    GetSystemTimeAsFileTime(&ft);
+    ULONGLONG t = filetime_to_ularge(ft).QuadPart;
+    return (unsigned long long)((t - 116444736000000000ULL) / 10000ULL);
+}
+
+/* Keep the process handle so later stats can be read; the oldest entry is recycled. */
+static void track_launch(HANDLE process, const LaunchResult *res) {
+    EnterCriticalSection(&g_launch_lock);
+    TrackedLaunch *t = &g_launches[g_launch_next];
+    if (t->used && t->process) CloseHandle(t->process);
+    memset(t, 0, sizeof(*t));
+    t->used = 1;
+    t->process = process;
+    t->pid = res->pid;
+    snprintf(t->app_name, sizeof(t->app_name), "%s", res->app_name);
+    t->requested_core = res->requested_core;
+    t->open_ms = res->open_ms;
+    snprintf(t->ready_state, sizeof(t->ready_state), "%s", res->ready_state);
+    t->start_tick = GetTickCount64() - (ULONGLONG)res->open_ms;
+    t->last_tick = t->start_tick;
+    t->last_cpu_100ns = 0;
+    g_launch_next = (g_launch_next + 1) % MAX_TRACKED_LAUNCHES;
+    LeaveCriticalSection(&g_launch_lock);
+}
+
+int monitor_get_launch_stats(unsigned long pid, LaunchStats *st) {
+    memset(st, 0, sizeof(LaunchStats));
+    st->pid = pid;
+    st->requested_core = -1;
+    HANDLE dup = NULL;
+    double delta_wall_ms = 0.0;
+    ULONGLONG prev_cpu = 0;
+
+    EnterCriticalSection(&g_launch_lock);
+    TrackedLaunch *t = NULL;
+    for (int i = 0; i < MAX_TRACKED_LAUNCHES; i++) {
+        if (g_launches[i].used && g_launches[i].pid == pid) { t = &g_launches[i]; break; }
+    }
+    if (t) {
+        st->found = 1;
+        snprintf(st->app_name, sizeof(st->app_name), "%s", t->app_name);
+        st->requested_core = t->requested_core;
+        st->open_ms = t->open_ms;
+        snprintf(st->ready_state, sizeof(st->ready_state), "%s", t->ready_state);
+        ULONGLONG now = GetTickCount64();
+        st->uptime_ms = (double)(now - t->start_tick);
+        delta_wall_ms = (double)(now - t->last_tick);
+        prev_cpu = t->last_cpu_100ns;
+        ULONGLONG cpu = process_cpu_100ns(t->process);
+        t->last_cpu_100ns = cpu;
+        t->last_tick = now;
+        st->cpu_time_ms = (double)cpu / 10000.0;
+        if (delta_wall_ms > 0.0 && cpu >= prev_cpu) {
+            SYSTEM_INFO si;
+            GetSystemInfo(&si);
+            double cores = si.dwNumberOfProcessors > 0 ? (double)si.dwNumberOfProcessors : 1.0;
+            st->cpu_percent = 100.0 * ((double)(cpu - prev_cpu) / 10000.0) / (delta_wall_ms * cores);
+            if (st->cpu_percent > 100.0) st->cpu_percent = 100.0;
+        }
+        DWORD code = 0;
+        st->running = GetExitCodeProcess(t->process, &code) && code == STILL_ACTIVE;
+        st->exit_code = st->running ? 0 : (unsigned long)code;
+        if (st->running) {
+            PROCESS_MEMORY_COUNTERS pmc;
+            memset(&pmc, 0, sizeof(pmc));
+            pmc.cb = sizeof(pmc);
+            if (GetProcessMemoryInfo(t->process, &pmc, sizeof(pmc))) {
+                st->memory_mb = (double)pmc.WorkingSetSize / (1024.0 * 1024.0);
+                st->peak_memory_mb = (double)pmc.PeakWorkingSetSize / (1024.0 * 1024.0);
+            }
+            DWORD_PTR pmask = 0, smask = 0;
+            if (GetProcessAffinityMask(t->process, &pmask, &smask)) {
+                mask_to_cores(pmask, st->affinity_cores, &st->affinity_count);
+            }
+            dup = t->process;
+        }
+    }
+    LeaveCriticalSection(&g_launch_lock);
+
+    if (!st->found) return 404;
+    if (dup) st->threads = process_thread_count(pid);
+    monitor_get_core_usage(&st->cores);
+    return 200;
+}
+
 /* Launch strictly from a hardcoded whitelist (never execute arbitrary user strings) */
 int monitor_launch_app(const char *app_key, int pin_core, LaunchResult *res) {
     memset(res, 0, sizeof(LaunchResult));
     res->pinned_core = -1;
+    res->requested_core = pin_core;
 
     if (!app_key) {
         strcpy(res->message, "Missing application name.");
@@ -317,6 +518,13 @@ int monitor_launch_app(const char *app_key, int pin_core, LaunchResult *res) {
     memset(&pi, 0, sizeof(pi));
     si.cb = sizeof(si);
 
+    /* Per-core load just before launch; also starts the "during launch" window. */
+    monitor_get_core_usage(&res->cores_before);
+    LARGE_INTEGER qpf, qp_start, qp_end;
+    QueryPerformanceFrequency(&qpf);
+    QueryPerformanceCounter(&qp_start);
+    res->launched_at_ms = unix_now_ms();
+
     DWORD creation_flags = CREATE_NEW_PROCESS_GROUP | (pin_mask ? CREATE_SUSPENDED : 0);
     if (!CreateProcessA(exe_path, NULL, NULL, NULL, FALSE,
                         creation_flags, NULL, NULL, &si, &pi)) {
@@ -340,9 +548,33 @@ int monitor_launch_app(const char *app_key, int pin_core, LaunchResult *res) {
         }
     }
 
+    /* Opening time: wait (max 10 s) until the app's UI is waiting for input. */
+    DWORD idle = WaitForInputIdle(pi.hProcess, 10000);
+    QueryPerformanceCounter(&qp_end);
+    res->open_ms = qpf.QuadPart > 0
+        ? 1000.0 * (double)(qp_end.QuadPart - qp_start.QuadPart) / (double)qpf.QuadPart : 0.0;
+    DWORD exit_code = 0;
+    int still_running = GetExitCodeProcess(pi.hProcess, &exit_code) && exit_code == STILL_ACTIVE;
+    if (!still_running) snprintf(res->ready_state, sizeof(res->ready_state), "exited");
+    else if (idle == 0) snprintf(res->ready_state, sizeof(res->ready_state), "ready");
+    else if (idle == WAIT_TIMEOUT) snprintf(res->ready_state, sizeof(res->ready_state), "timeout");
+    else snprintf(res->ready_state, sizeof(res->ready_state), "no-input-idle");
+    monitor_get_core_usage(&res->cores_during);
+
+    if (still_running) {
+        DWORD_PTR pmask = 0, smask = 0;
+        if (GetProcessAffinityMask(pi.hProcess, &pmask, &smask)) {
+            mask_to_cores(pmask, res->affinity_cores, &res->affinity_count);
+        }
+    }
+
     res->pid = (unsigned long)pi.dwProcessId;
     res->success = 1;
-    if (res->pinned_core >= 0) {
+    if (!still_running) {
+        snprintf(res->message, sizeof(res->message),
+                 "%s (PID %lu) handed off and exited after %.0f ms; Windows likely opened it in an existing or Store-app process.",
+                 res->app_name, res->pid, res->open_ms);
+    } else if (res->pinned_core >= 0) {
         snprintf(res->message, sizeof(res->message),
                  "%s launched (PID %lu) and pinned to Core %d.",
                  res->app_name, res->pid, res->pinned_core);
@@ -356,6 +588,6 @@ int monitor_launch_app(const char *app_key, int pin_core, LaunchResult *res) {
     }
 
     CloseHandle(pi.hThread);
-    CloseHandle(pi.hProcess);
+    track_launch(pi.hProcess, res); /* handle closed when the slot is recycled or on exit */
     return 200;
 }

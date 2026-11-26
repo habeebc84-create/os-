@@ -51,6 +51,18 @@ In PowerShell, open the extracted folder and run `.\build.bat --allow-hosted` to
 
 The agent listens on the Windows computer's loopback address. `--allow-hosted` permits the production simulator origin to read local hardware and process data and request launches from the whitelist. Stop the agent when you want to end that access.
 
+## Launch Results (opening time and cores)
+
+After each launch from the Process Monitor tab, the **Launch Results** panel below the launcher shows real numbers measured by the agent on this PC:
+
+- **Opening time**: `QueryPerformanceCounter` from just before `CreateProcessA` until `WaitForInputIdle` reports the app is ready for input (maximum 10 s). If the started process hands off to an already-running instance or a Store app and exits (common for Chrome, and for Calculator/Notepad on Windows 11), it is shown as "Handed off and exited".
+- **Cores**: the requested core, the cores Windows actually allows the process to use (`GetProcessAffinityMask`), and whether the pin was verified.
+- **Per-core load**: every logical core's busy % before and during the launch and live every second (`NtQuerySystemInformation`), with the pinned core highlighted.
+- **Process stats**: CPU %, CPU time (`GetProcessTimes`), working-set memory and peak (`GetProcessMemoryInfo`) and thread count.
+- **History**: every launch this session, with CSV export.
+
+Endpoints: `POST /api/launch`, `GET /api/launch/stats?pid=N` (only PIDs this agent launched), `GET /api/cores`.
+
 ## Demo Script for Viva / Presentation
 
 1. **Scheduling Simulator Tab**: Click **Load Sample Data** (`P1..P5`, 2 cores, quantum 3), click **Run Simulation**, inspect the multi-core Gantt chart, then click **Play** to animate the glowing playhead and watch the live Core Cards light up per tick.

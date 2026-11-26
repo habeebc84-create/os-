@@ -37,6 +37,8 @@ import {
 } from './lib/schedulerEngine';
 import { runSchedulerJob } from './lib/runSchedulerJob';
 import { GanttTracks } from './components/GanttTracks';
+import { LaunchResultsPanel } from './components/LaunchResultsPanel';
+import type { LaunchRecord } from './components/LaunchResultsPanel';
 import {
   canConnectToAgent,
   fetchWithTimeout,
@@ -294,6 +296,7 @@ export default function App() {
   const [isRefreshingProcs, setIsRefreshingProcs] = useState(false);
   const [launchingApp, setLaunchingApp] = useState<string | null>(null);
   const [launchNotice, setLaunchNotice] = useState<{ message: string; error: boolean } | null>(null);
+  const [launchHistory, setLaunchHistory] = useState<LaunchRecord[]>([]);
   const [procSearch, setProcSearch] = useState('');
   const [procSort, setProcSort] = useState<{ key: 'name' | 'pid' | 'memoryMB'; dir: 1 | -1 }>({
     key: 'memoryMB',
@@ -907,16 +910,20 @@ export default function App() {
     if (launchingApp || !backendConnectedRef.current) return;
     setLaunchingApp(app);
     setLaunchNotice(null);
+    const core = hwInfo.affinityCores?.includes(pinCore) ? pinCore : -1;
+    const requestedAt = Date.now();
     try {
+      // The agent waits up to 10 s for the app to become ready, so allow longer than that.
       const data = await requestAgent<LaunchResult>('/api/launch', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ app, core: hwInfo.affinityCores?.includes(pinCore) ? pinCore : -1 }),
-      }, 8000);
+        body: JSON.stringify({ app, core }),
+      }, 15000);
       if (!data?.launched || !Number.isInteger(data.pid) || data.pid <= 0) {
         throw new Error(data?.message || 'The Windows agent did not confirm the launch.');
       }
       setLaunchNotice({ message: data.message || `Application launched (PID ${data.pid}).`, error: false });
+      setLaunchHistory((list) => [{ ...data, requestedCore: data.requestedCore ?? core, requestedAt }, ...list].slice(0, 50));
       void fetchOsProcesses();
     } catch (err) {
       const message = err instanceof Error && !['AbortError', 'TypeError'].includes(err.name)
@@ -1829,6 +1836,8 @@ export default function App() {
                   </p>
                 )}
               </div>
+
+              <LaunchResultsPanel connected={backendConnected} launches={launchHistory} onClear={() => setLaunchHistory([])} />
 
               <div className="liquid-glass p-5 sm:p-6">
                 <div className="flex items-center justify-between gap-4 flex-wrap mb-4">
