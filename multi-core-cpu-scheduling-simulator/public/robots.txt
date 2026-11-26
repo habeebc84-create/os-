@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://multi-core-cpu-scheduling-simulator.vercel.app/sitemap.xml

@@ -306,6 +306,7 @@ export default function App() {
   const [selectedFile, setSelectedFile] = useState<string>(C_PROJECT_FILES[0].name);
   const [fileContents, setFileContents] = useState<Record<string, string>>({});
   const fileCacheRef = useRef<Record<string, string>>({});
+  const codeDialogRef = useRef<HTMLDivElement>(null);
   const [fileLoading, setFileLoading] = useState(false);
   const [fileError, setFileError] = useState<string | null>(null);
   const [fileReloadNonce, setFileReloadNonce] = useState(0);
@@ -554,11 +555,32 @@ export default function App() {
     return () => controller.abort();
   }, [codeDrawerOpen, selectedFile, fileReloadNonce]);
 
-  // Close C11 source modal on Escape key
+  // C11 source modal: move focus in, keep Tab inside, close on Escape, restore focus on close
   useEffect(() => {
     if (!codeDrawerOpen) return;
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const dialog = codeDialogRef.current;
+    dialog?.querySelector<HTMLElement>('[data-autofocus]')?.focus();
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setCodeDrawerOpen(false);
+      if (e.key === 'Escape') {
+        setCodeDrawerOpen(false);
+        return;
+      }
+      if (e.key !== 'Tab' || !dialog) return;
+      const focusable = [...dialog.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])'
+      )].filter((el) => el.offsetParent !== null);
+      if (focusable.length === 0) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      const active = document.activeElement;
+      if (e.shiftKey && (active === first || !dialog.contains(active))) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && (active === last || !dialog.contains(active))) {
+        e.preventDefault();
+        first.focus();
+      }
     };
     const overflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
@@ -566,6 +588,7 @@ export default function App() {
     return () => {
       document.body.style.overflow = overflow;
       window.removeEventListener('keydown', onKeyDown);
+      if (opener?.isConnected) opener.focus();
     };
   }, [codeDrawerOpen]);
 
@@ -1059,6 +1082,9 @@ export default function App() {
         <main className="flex flex-col gap-5 min-w-0">
           {/* Glass Top Bar */}
           <header className="liquid-glass px-4 sm:px-6 py-3.5 flex items-center justify-end gap-3 flex-wrap">
+            {activeTab !== 'scheduler' && (
+              <h1 className="sr-only">{navItems[activeTabIndex]?.label} · Multi-Core CPU Scheduling Simulator</h1>
+            )}
             <div className="flex items-center gap-2.5 sm:gap-3 flex-wrap">
               <button type="button" onClick={toggleTheme}
                 aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
@@ -1305,7 +1331,7 @@ export default function App() {
                       </button>
                     </div>
                   </form>
-                  <div className="mt-3 max-h-[168px] overflow-y-auto overflow-x-auto">
+                  <div className="mt-3 max-h-[168px] overflow-y-auto overflow-x-auto" tabIndex={0} role="region" aria-label="Process queue table">
                     <table className="w-full text-sm tabular-nums">
                       <thead>
                         <tr className="text-left text-xs text-muted border-b border-neutral-ui/12">
@@ -1513,7 +1539,7 @@ export default function App() {
               <div className="liquid-glass p-5 sm:p-6">
                 <h2 className="text-[17px] font-bold mb-1">Per-Process Scheduling Metrics</h2>
                 <p className="text-xs text-muted mb-4">Exact Module 3 timing formulas</p>
-                <div className="overflow-x-auto">
+                <div className="overflow-x-auto" tabIndex={0} role="region" aria-label="Per-process scheduling metrics table">
                   <table className="w-full text-sm tabular-nums">
                     <thead>
                       <tr className="text-left text-xs text-muted border-b border-neutral-ui/14">
@@ -1598,8 +1624,8 @@ export default function App() {
               </div>
               {!backendConnected && (
                 <div className="mt-3 flex flex-wrap gap-x-4 gap-y-2 text-xs font-semibold text-info">
-                  <a href={WINDOWS_SOURCE_URL} download="windows-c11-project.zip" className="hover:underline">Download Windows C11 ZIP</a>
-                  <a href={LOCAL_DASHBOARD_URL} target="_blank" rel="noopener noreferrer" className="hover:underline">Open local dashboard</a>
+                  <a href={WINDOWS_SOURCE_URL} download="windows-c11-project.zip" className="inline-flex items-center min-h-6 hover:underline">Download Windows C11 ZIP</a>
+                  <a href={LOCAL_DASHBOARD_URL} target="_blank" rel="noopener noreferrer" className="inline-flex items-center min-h-6 hover:underline">Open local dashboard</a>
                 </div>
               )}
               {connectionError && <p className="mt-3 text-xs text-danger" role="alert">{connectionError}</p>}
@@ -1851,7 +1877,7 @@ export default function App() {
                 {processLoadError && (
                   <p className="mb-3 text-xs text-danger" role="alert">Could not refresh the Windows process list. Select Refresh to retry.</p>
                 )}
-                <div className="overflow-x-auto max-h-[420px]">
+                <div className="overflow-x-auto max-h-[420px]" tabIndex={0} role="region" aria-label="Windows process list">
                   <table className="w-full text-sm tabular-nums">
                     <thead>
                       <tr className="text-left text-xs text-muted border-b border-neutral-ui/14">
@@ -1965,7 +1991,7 @@ export default function App() {
                   <div className="liquid-glass p-5 sm:p-6">
                     <h3 className="text-base font-bold mb-1">Comparative Metrics Matrix</h3>
                     <p className="text-xs text-muted mb-4">Best algorithm for each metric is highlighted in green</p>
-                    <div className="overflow-x-auto">
+                    <div className="overflow-x-auto" tabIndex={0} role="region" aria-label="Comparative metrics table">
                       <table className="w-full text-sm tabular-nums">
                         <thead>
                           <tr className="text-left text-xs text-muted border-b border-neutral-ui/14">
@@ -2140,15 +2166,15 @@ export default function App() {
           }}
           className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-3 sm:p-4"
         >
-          <div className="liquid-glass w-full max-w-6xl h-[88vh] flex flex-col overflow-hidden panel-inset">
+          <div ref={codeDialogRef} className="liquid-glass w-full max-w-6xl h-[88vh] flex flex-col overflow-hidden panel-inset">
             <div className="px-4 sm:px-6 py-4 border-b border-neutral-ui/14 flex items-center justify-between gap-4">
               <div className="min-w-0">
                 <h2 id="c11-modal-title" className="text-sm sm:text-base font-bold truncate">
                   Windows C11 / MinGW Project Bundle (8 Files)
                 </h2>
-                <p className="text-[11px] sm:text-xs text-muted truncate">
+                <p className="text-[11px] sm:text-xs text-muted">
                   Compile with:{' '}
-                  <code className="text-info">
+                  <code className="text-info break-all">
                     gcc -std=c11 -O2 -Wall -Wextra server.c scheduler.c monitor.c -o simulator.exe -lws2_32 -lpsapi -ladvapi32
                   </code>
                 </p>
@@ -2156,6 +2182,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => setCodeDrawerOpen(false)}
+                data-autofocus
                 aria-label="Close source viewer"
                 className="w-9 h-9 rounded-full bg-neutral-ui/10 hover:bg-neutral-ui/20 flex items-center justify-center cursor-pointer shrink-0"
               >
@@ -2231,7 +2258,7 @@ export default function App() {
                     </button>
                   </div>
                 ) : (
-                  <pre className="flex-1 p-4 overflow-auto text-xs font-mono-tabular text-ink leading-relaxed panel-inset">
+                  <pre tabIndex={0} aria-label={`${selectedFile} source code`} className="flex-1 p-4 overflow-auto text-xs font-mono-tabular text-ink leading-relaxed panel-inset">
                     <code>{fileLoading && !fileContents[selectedFile] ? 'Loading source file...' : fileContents[selectedFile] || ''}</code>
                   </pre>
                 )}
