@@ -65,6 +65,8 @@
 html {
   scroll-behavior: smooth;
   font-family: system-ui, sans-serif;
+  scrollbar-color: var(--stroke) var(--page);
+  scrollbar-width: thin;
 }
 
 ::selection {
@@ -78,6 +80,30 @@ body {
   min-height: 100vh;
   overflow-x: hidden;
   -webkit-font-smoothing: antialiased;
+  caret-color: var(--accent);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--page);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--stroke);
+  border: 2px solid var(--page);
+  border-radius: 10px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--muted);
+}
+
+a {
+  text-underline-offset: 0.2em;
 }
 
 .font-mono-tabular {

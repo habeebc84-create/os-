@@ -995,7 +995,7 @@ export default function App() {
               <div className="text-xs text-muted mt-1">C11 Multi-Core Engine &amp; Monitor</div>
             </div>
 
-            <nav className="relative flex flex-row lg:flex-col gap-2 flex-wrap" aria-label="Primary Navigation">
+            <nav className="relative grid grid-cols-2 lg:flex lg:flex-col gap-2" aria-label="Primary navigation">
               {/* Sliding Glass Pill Indicator (Desktop) */}
               <div
                 aria-hidden="true"
@@ -1019,13 +1019,13 @@ export default function App() {
                       setActiveTab(item.key);
                     }}
                     aria-current={active ? 'page' : undefined}
-                    className={`relative z-10 h-11 lg:h-12 px-3.5 rounded-2xl flex items-center gap-2.5 lg:gap-3 text-xs sm:text-sm font-semibold whitespace-nowrap shrink-0 cursor-pointer transition-all ${
+                    className={`relative z-10 min-h-11 lg:h-12 w-full min-w-0 px-2.5 lg:px-3.5 rounded-xl lg:rounded-2xl flex items-center gap-2 lg:gap-3 text-[11px] sm:text-xs lg:text-sm leading-tight text-left font-semibold whitespace-normal lg:whitespace-nowrap cursor-pointer transition-all ${
                       active
                         ? 'text-ink lg:bg-transparent bg-brand/30 ring-1 ring-brand/50'
                         : 'text-muted hover:text-ink hover:translate-x-0.5'
                     }`}
                   >
-                    {item.icon}
+                    <span className="shrink-0 [&>svg]:w-4 [&>svg]:h-4 lg:[&>svg]:w-5 lg:[&>svg]:h-5">{item.icon}</span>
                     <span>{item.label}</span>
                   </button>
                 );
@@ -1033,7 +1033,7 @@ export default function App() {
             </nav>
           </div>
 
-          <div className="mt-4 lg:mt-0 space-y-3">
+          <div className="mt-4 lg:mt-0 space-y-3 max-lg:hidden">
             <button
               type="button"
               onClick={() => setCodeDrawerOpen(true)}
@@ -1054,10 +1054,7 @@ export default function App() {
         {/* Workspace Column */}
         <main className="flex flex-col gap-5 min-w-0">
           {/* Glass Top Bar */}
-          <header className="liquid-glass px-4 sm:px-6 py-3.5 flex items-center justify-between gap-3 flex-wrap">
-            <div className="text-[15px] sm:text-[16px] font-bold tracking-tight">
-              Multi-Core CPU Scheduling Simulator
-            </div>
+          <header className="liquid-glass px-4 sm:px-6 py-3.5 flex items-center justify-end gap-3 flex-wrap">
             <div className="flex items-center gap-2.5 sm:gap-3 flex-wrap">
               <button type="button" onClick={toggleTheme}
                 aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
@@ -1093,16 +1090,10 @@ export default function App() {
             <div className="flex flex-col gap-5">
               {/* Simulation overview */}
               <div
-                className="liquid-glass p-5 sm:p-7 grid grid-cols-1 xl:grid-cols-[1.35fr_1fr] gap-6 items-center"
-                style={{
-                  background:
-                    'linear-gradient(135deg, color-mix(in srgb, var(--primary-action) 16%, transparent) 0%, var(--panel) 60%, color-mix(in srgb, var(--warning) 8%, transparent) 100%)',
-                }}
+                className="liquid-glass p-5 sm:p-7"
+                style={{ background: 'color-mix(in srgb, var(--primary-action) 12%, var(--panel))' }}
               >
                 <div>
-                  <div className="text-xs font-bold tracking-[0.16em] uppercase text-info mb-2">
-                    Operating Systems · Multi-Core Engine
-                  </div>
                   <h1 className="text-2xl sm:text-3xl lg:text-4xl font-extrabold tracking-tight leading-[1.12] mb-3">
                     Multi-Core CPU Scheduling Simulator
                   </h1>
@@ -1110,15 +1101,6 @@ export default function App() {
                     Simulate FCFS, SJF, SRTF, Priority, and Round Robin across 1–8 CPU cores with real-time tick replay,
                     per-core utilization metrics, and exact Windows C11 thread synchronization.
                   </p>
-                </div>
-                <div className="grid grid-cols-2 gap-3">
-                  {simResult.metrics.coreUtilization.slice(0, 4).map((core) => (
-                    <div key={core.core} className="p-3.5 rounded-xl panel-inset border border-neutral-ui/16 flex items-center justify-between gap-2 text-xs font-bold">
-                      <span className="flex items-center gap-1.5"><Cpu className="w-4 h-4" /> Core {core.core}</span>
-                      <span className="text-info tabular-nums">{core.utilization.toFixed(1)}%</span>
-                    </div>
-                  ))}
-                  {simResult.cores > 4 && <span className="col-span-2 text-xs text-muted">+{simResult.cores - 4} more cores</span>}
                 </div>
               </div>
 
