@@ -1232,7 +1232,7 @@ export default function App() {
                       Clear
                     </button>
                   </div>
-                  <form onSubmit={handleAddProcess}>
+                  <form onSubmit={handleAddProcess} noValidate>
                     <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
                       <label className="block">
                         <span className="text-[11px] font-semibold text-muted block mb-1">PID</span>
@@ -1662,9 +1662,8 @@ export default function App() {
                     <h3 className="text-base font-bold">Live System CPU Utilization</h3>
                     <p className="text-xs text-muted mt-1.5 leading-relaxed">
                       {backendConnected
-                        ? <>Measured using <code className="text-info">GetSystemTimes</code>.</>
-                        : 'Simulated CPU usage.'}
-                      across idle, kernel, and user time counters.
+                        ? <>Measured with <code className="text-info">GetSystemTimes</code> across idle, kernel, and user time counters.</>
+                        : 'Simulated CPU usage for the browser preview. Connect the Windows agent for real readings.'}
                     </p>
                   </div>
                 </div>
