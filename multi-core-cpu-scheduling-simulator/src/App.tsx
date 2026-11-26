@@ -373,7 +373,11 @@ export default function App() {
   }, []);
 
   const connectAgent = useCallback(async (manual = true) => {
-    if (!canConnectToAgent || connectionRequest.current || backendConnectedRef.current) return;
+    if (!canConnectToAgent || backendConnectedRef.current) return;
+    if (connectionRequest.current) {
+      if (!manual) return;
+      connectionRequest.current.abort();
+    }
     const controller = new AbortController();
     connectionRequest.current = controller;
     if (manual) {
@@ -400,7 +404,7 @@ export default function App() {
       setBackendConnected(true);
     } catch {
       if (manual && !controller.signal.aborted) {
-        setConnectionError('Could not connect. Start the updated Windows agent and allow local network access if prompted. You can also open the local dashboard.');
+        setConnectionError('Could not reach the Windows agent. Open the local dashboard on this PC. If it does not load, check PowerShell for build or startup errors. If it loads, check that hosted access is enabled and that your browser allows local network access for this site.');
       }
     } finally {
       if (connectionRequest.current === controller) {
@@ -1568,11 +1572,13 @@ export default function App() {
                   {backendConnected ? (
                     <p className="text-xs text-muted">Showing live data from the Windows agent.</p>
                   ) : (
-                    <p className="text-xs text-muted max-w-2xl">
-                      Download and extract the C11 project on Windows. Run <code>build.bat</code> with MinGW,
-                      then start <code>simulator.exe --allow-hosted</code> and select Connect. Allow local
-                      network access if your browser asks.
-                    </p>
+                    <ol className="list-decimal pl-4 text-xs text-muted max-w-2xl space-y-1">
+                      <li>Download the Windows C11 ZIP and extract all files on the PC you want to monitor.</li>
+                      <li>Open PowerShell in the extracted folder. With MinGW-w64 GCC on PATH, run
+                        {' '}<code>.\build.bat --allow-hosted</code> and keep the window open.</li>
+                      <li>In this browser on the same PC, select Connect Windows Agent.
+                        Allow local network access if prompted.</li>
+                    </ol>
                   )}
                 </div>
                 {backendConnected ? (

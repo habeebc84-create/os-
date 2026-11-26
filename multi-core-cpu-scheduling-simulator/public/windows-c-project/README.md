@@ -37,6 +37,8 @@ A complete Operating Systems project written in pure **C11** for Windows (MinGW 
 
 ## Connect the Hosted Simulator
 
+In PowerShell, open the extracted folder and run `.\build.bat --allow-hosted` to compile and start the agent. Keep that window open while connected. For an existing build, follow the steps below.
+
 1. Stop any running local-only instance with **Ctrl+C**. From the same project folder, start the agent with hosted access enabled:
 
    ```cmd

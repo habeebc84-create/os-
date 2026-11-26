@@ -206,8 +206,7 @@ void monitor_get_processes(OSProcessList *plist) {
             if (plist->count >= MAX_OS_PROCESSES) break;
             OSProcessInfo *item = &plist->list[plist->count++];
             item->pid = (unsigned long)pe.th32ProcessID;
-            strncpy(item->name, pe.szExeFile, sizeof(item->name) - 1);
-            item->name[sizeof(item->name) - 1] = '\0';
+            snprintf(item->name, sizeof(item->name), "%s", pe.szExeFile);
             item->memory_mb = 0.0;
 
             HANDLE hProc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ,
